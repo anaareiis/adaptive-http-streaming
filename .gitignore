@@ -25,6 +25,9 @@ wheels/
 logs/
 *.log
 
+# Pytest cache
+.pytest_cache/
+
 # IDE
 .vscode/
 .idea/
@@ -38,3 +41,7 @@ Thumbs.db
 # Project specific
 reports/
 graphs/
+
+# Issue files (local development)
+ISSUE_*.md
+*_REPORT.md
