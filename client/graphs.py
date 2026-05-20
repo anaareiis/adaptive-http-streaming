@@ -51,6 +51,7 @@ BUFFER_ALIASES = (
     "buffer_s",
     "buffer",
     "current_buffer",
+    "buffer_level_secs",
 )
 REBUFFER_ALIASES = (
     "rebuffer",
@@ -59,6 +60,7 @@ REBUFFER_ALIASES = (
     "rebuffer_event",
     "stall",
     "stalled",
+    "rebuffering_occurred",
 )
 REBUFFER_COUNT_ALIASES = (
     "rebuffer_count",
