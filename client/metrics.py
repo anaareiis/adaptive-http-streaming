@@ -1,8 +1,10 @@
 """Metrics collection and analysis."""
 
 import time
+import os
+import csv
 from collections import deque
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -229,3 +231,89 @@ class ThroughputMeter:
             f"ThroughputMeter(measurements={len(self.history)}, "
             f"avg={self.get_average_throughput():.2f} kbps)"
         )
+
+class MetricsRecorder:
+    """Gera a coleta de métricas de streaming e grava em arquivos CSV."""
+
+    def __init__(self, output_dir: str = "logs", batch_size: int = 5):
+        """
+        Inicializa o gravador de métricas.
+
+        Args:
+            output_dir: Diretório onde os arquivos de log serão salvos.
+            batch_size: Quantidade de registros na memória antes de descarregar (flush) no CSV.
+        """
+        self.output_dir = output_dir
+        self.batch_size = batch_size
+        self.buffer_data: List[Dict[str, Any]] = []
+        
+        # Definição das colunas
+        self.headers = [
+            "segment_id", 
+            "timestamp", 
+            "quality", 
+            "bitrate_kbps", 
+            "throughput_kbps", 
+            "buffer_level_secs", 
+            "rebuffering_occurred", 
+            "quality_changed"
+        ]
+        
+        # Cria a pasta de logs se ela não existir
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+            
+        # Gera o nome do arquivo único com base no TIMESTAMP atual
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.filepath = os.path.join(self.output_dir, f"metrics_{timestamp_str}.csv")
+        
+        # Cria o arquivo inicialmente inserindo apenas o cabeçalho correto
+        self._write_headers()
+
+    def _write_headers(self) -> None:
+        """Escreve o cabeçalho no arquivo CSV se ele estiver vazio."""
+        with open(self.filepath, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(self.headers)
+
+    def record_segment(self, segment_data: Dict[str, Any]) -> None:
+        """
+        Guarda os dados do segmento em memória e escreve em lote se atingir o limite.
+
+        Args:
+            segment_data: Dicionário contendo as chaves correspondentes às colunas do CSV.
+        """
+        # Garante que o timestamp esteja no formato ISO se não for string
+        if isinstance(segment_data.get("timestamp"), datetime):
+            segment_data["timestamp"] = segment_data["timestamp"].isoformat()
+        elif "timestamp" not in segment_data:
+            segment_data["timestamp"] = datetime.now().isoformat()
+
+        self.buffer_data.append(segment_data)
+
+        # Se o tamanho do lote em memória atingir o batch_size, descarrega no arquivo
+        if len(self.buffer_data) >= self.batch_size:
+            self.flush()
+
+    def flush(self) -> None:
+        """Descarrega os dados retidos na memória diretamente para o arquivo CSV."""
+        if not self.buffer_data:
+            return
+
+        with open(self.filepath, mode='a', newline='', encoding='utf-8') as f:
+            # DictWriter mapeia as chaves do dicionário perfeitamente com o cabeçalho
+            writer = csv.DictWriter(f, fieldnames=self.headers, extrasaction='ignore')
+            writer.writerows(self.buffer_data)
+            
+        # Limpa o buffer da memória após escrever
+        self.buffer_data.clear()
+
+    def close(self) -> None:
+        """Garante que qualquer dado residual na memória seja salvo ao fechar o player."""
+        self.flush()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
