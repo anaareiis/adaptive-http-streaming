@@ -21,6 +21,7 @@ class ManifestParser:
         self.qualities = []
         self.servers = []
         self.segment_info = {}
+        self.representations = None  # populated only with v2.0 format
 
     def download_manifest(self, manifest_url: Optional[str] = None) -> bool:
         """
@@ -81,6 +82,11 @@ class ManifestParser:
         """
         Parse manifest data into internal structures.
 
+        Supports two formats:
+        - Legacy format: 'qualities' list with name/bitrate, 'segment' dict with duration/total
+        - v2.0 format: 'representations' list with quality/bitrate_kbps/url_path,
+          'segment_duration_s' at root level
+
         Raises:
             KeyError: If required fields are missing
             ValueError: If data format is invalid
@@ -88,13 +94,24 @@ class ManifestParser:
         if not self.manifest_data:
             raise ValueError("No manifest data to parse")
 
-        # Parse qualities
-        if "qualities" not in self.manifest_data:
-            raise KeyError("Missing 'qualities' field in manifest")
-
-        self.qualities = self.manifest_data["qualities"]
-        if not isinstance(self.qualities, list):
-            raise ValueError("'qualities' must be a list")
+        # Parse qualities — detect format by key presence
+        if "representations" in self.manifest_data:
+            reps = self.manifest_data["representations"]
+            if not isinstance(reps, list):
+                raise ValueError("'representations' must be a list")
+            self.representations = reps
+            # Map to the standard internal format expected by ABR classes
+            self.qualities = [
+                {"name": r["quality"], "bitrate": r["bitrate_kbps"]}
+                for r in reps
+            ]
+        elif "qualities" in self.manifest_data:
+            self.qualities = self.manifest_data["qualities"]
+            if not isinstance(self.qualities, list):
+                raise ValueError("'qualities' must be a list")
+            self.representations = None
+        else:
+            raise KeyError("Missing 'qualities' or 'representations' field in manifest")
 
         # Parse servers
         if "servers" not in self.manifest_data:
@@ -104,13 +121,20 @@ class ManifestParser:
         if not isinstance(self.servers, list):
             raise ValueError("'servers' must be a list")
 
-        # Parse segment info
-        if "segment" not in self.manifest_data:
-            raise KeyError("Missing 'segment' field in manifest")
-
-        self.segment_info = self.manifest_data["segment"]
-        if not isinstance(self.segment_info, dict):
-            raise ValueError("'segment' must be a dictionary")
+        # Parse segment info — detect format
+        if "segment_duration_s" in self.manifest_data:
+            # v2.0: duration at root level, total segments may not exist
+            self.segment_info = {
+                "duration": float(self.manifest_data["segment_duration_s"]),
+            }
+            if "total_segments" in self.manifest_data:
+                self.segment_info["total"] = int(self.manifest_data["total_segments"])
+        elif "segment" in self.manifest_data:
+            self.segment_info = self.manifest_data["segment"]
+            if not isinstance(self.segment_info, dict):
+                raise ValueError("'segment' must be a dictionary")
+        else:
+            raise KeyError("Missing 'segment' or 'segment_duration_s' field in manifest")
 
     def get_qualities(self) -> List[Dict]:
         """
@@ -190,12 +214,12 @@ class ManifestParser:
 
         return float(self.segment_info["duration"])
 
-    def get_total_segments(self) -> int:
+    def get_total_segments(self) -> Optional[int]:
         """
         Get total number of segments.
 
         Returns:
-            Total number of segments in the stream
+            Total number of segments, or None if not specified (v2.0 format)
         """
         if not self.manifest_data:
             raise RuntimeError("No manifest loaded. Call download_manifest() first.")
@@ -203,7 +227,53 @@ class ManifestParser:
         if "total" in self.segment_info:
             return int(self.segment_info["total"])
 
-        raise KeyError("Missing 'total' in segment info")
+        return None
+
+    def get_representations(self) -> List[Dict]:
+        """
+        Get full list of representations (v2.0 format).
+
+        Returns:
+            List of representation dicts with quality, bitrate_kbps, segment_bytes, url_path
+
+        Raises:
+            RuntimeError: If manifest not loaded or format does not have representations
+        """
+        if not self.manifest_data:
+            raise RuntimeError("No manifest loaded. Call download_manifest() first.")
+
+        if self.representations is None:
+            raise RuntimeError(
+                "Manifest does not contain representations (legacy format). "
+                "Use get_qualities() instead."
+            )
+
+        return self.representations.copy()
+
+    def get_representation_url(self, quality: str) -> str:
+        """
+        Get the URL path for a specific quality level.
+
+        For v2.0 manifests, returns the url_path field from representations.
+        For legacy manifests, returns a fallback path '/segment/{quality}'.
+
+        Args:
+            quality: Quality name (e.g., '240p', '720p')
+
+        Returns:
+            URL path string (e.g., '/segment/240p')
+        """
+        if not self.manifest_data:
+            raise RuntimeError("No manifest loaded. Call download_manifest() first.")
+
+        if self.representations is not None:
+            for rep in self.representations:
+                if rep["quality"] == quality:
+                    return rep["url_path"]
+            raise ValueError(f"Quality '{quality}' not found in representations")
+
+        # Fallback for legacy format
+        return f"/segment/{quality}"
 
     def get_primary_server(self) -> str:
         """
