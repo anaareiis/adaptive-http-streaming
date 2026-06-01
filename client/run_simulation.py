@@ -8,11 +8,16 @@ from abr import RateBasedABR
 from buffer_manager import BufferManager
 from metrics import MetricsRecorder
 
+# Diretórios na raiz do projeto (um nível acima de client/)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+GRAPHS_DIR = os.path.join(BASE_DIR, "graphs")
+
 def simulate_player_session():
     print("🚀 Iniciando simulação para gerar métricas reais...")
-    
+
     # 1. Configurações Iniciais
-    output_dir = "logs"
+    output_dir = LOGS_DIR
     metrics_file = os.path.join(output_dir, "metrics.csv")
     
     # Inicializa os componentes do seu projeto
