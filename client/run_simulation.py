@@ -98,7 +98,14 @@ def simulate_player_session():
         time.sleep(0.05) # Apenas para animação rápida no terminal
         
     recorder.close()
-    print(f"\n✨ Sucesso! Arquivo de métricas gerado em: {metrics_file}")
+    print(f"\n✨ Métricas salvas em: {recorder.filepath}")
+
+    # Gera gráficos automaticamente
+    from graphs import generate_graphs
+    generated = generate_graphs(recorder.filepath, output_dir=GRAPHS_DIR)
+    print(f"📊 Gráficos salvos em: {GRAPHS_DIR}/")
+    for path in generated.values():
+        print(f"   {os.path.basename(path)}")
 
 if __name__ == "__main__":
     simulate_player_session()
