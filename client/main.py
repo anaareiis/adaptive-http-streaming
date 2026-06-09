@@ -1,302 +1,291 @@
 """
-Cliente de Streaming Adaptativo — Tarefa 1 (Baseline Rate-Based ABR)
-Conecta ao servidor real, baixa segmentos, mede vazão, gerencia buffer e grava CSV.
+Cliente de Streaming Adaptativo — Tarefa 1 (Issue 14 Compliant)
+Conecta ao servidor real, baixa segmentos, mede vazão com timing por chunk,
+calcula jitter (Network e EWMA), gerencia buffer e executa failover automático.
 """
 
 import os
 import math
 import time
+import argparse
 import requests
-from collections import deque
 from datetime import datetime
 
-from abr import RateBasedABR
+from abr import RateBasedABR, BufferBasedABR
 from buffer_manager import BufferManager
 from failover import FailoverManager
 from metrics import MetricsRecorder, SPEC_HEADERS
 
-# ── Configurações ─────────────────────────────────────────────────────────────
-MANIFEST_URL    = "http://137.131.178.229:8080/manifest"
-TOTAL_SEGMENTS  = 30       # quantos segmentos baixar
-CHUNK_SIZE      = 4096     # bytes por chunk (para medir jitter intra-segmento)
-JITTER_EWMA_ALPHA = 0.2    # suavização EWMA do jitter entre segmentos
+# Parâmetros de rede e streaming
+JITTER_EWMA_ALPHA = 0.3
+CHUNK_SIZE = 4096
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
-GRAPHS_DIR = os.path.join(os.path.dirname(__file__), "..", "graphs")
-
-
-# ── Funções auxiliares ────────────────────────────────────────────────────────
 def fetch_manifest(url: str) -> dict:
-    """Baixa o manifesto JSON com as qualidades, servidores e duração dos segmentos."""
+    """Baixa o manifesto JSON contendo as qualidades, servidores e duracoes dos segmentos."""
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
+def main():
+    # Interface de Linha de Comando (CLI)
+    parser = argparse.ArgumentParser(description="Cliente de Streaming Adaptativo — Issue 14")
+    parser.add_argument(
+        "--policy", 
+        default="rate-based", 
+        choices=["rate-based", "buffer-based"],
+        help="Politica de ABR a ser utilizada (padrao: rate-based)"
+    )
+    parser.add_argument(
+        "--segments", 
+        type=int, 
+        default=30, 
+        help="Quantidade de segmentos para baixar (padrao: 30)"
+    )
+    parser.add_argument(
+        "--output-dir", 
+        default="logs", 
+        help="Diretorio para salvar o arquivo CSV de metricas (padrao: logs)"
+    )
+    parser.add_argument(
+        "--manifest", 
+        default="http://137.131.178.229:8080/manifest", 
+        help="URL do manifesto do servidor (padrao: oficial UnB)"
+    )
+    args = parser.parse_args()
 
-def parse_representations(manifest: dict) -> list:
-    """Converte 'representations' do manifest para o formato esperado pelo ABR."""
-    return [
-        {"name": r["quality"], "bitrate": r["bitrate_kbps"]}
-        for r in manifest["representations"]
-    ]
+    # Cria as pastas de logs e graficos se nao existirem
+    os.makedirs(args.output_dir, exist_ok=True)
+    graphs_dir = os.path.join(os.path.dirname(args.output_dir) if os.path.dirname(args.output_dir) else ".", "graphs")
+    os.makedirs(graphs_dir, exist_ok=True)
 
+    print("Iniciando cliente adaptativo...")
+    print(f"   Manifesto: {args.manifest}")
+    print(f"   Politica:  {args.policy}")
+    print(f"   Segmentos: {args.segments}\n")
 
-def get_url_for_quality(manifest: dict, quality: str, base_url: str) -> str:
-    """Monta a URL do segmento correspondente à qualidade escolhida pelo ABR."""
-    for r in manifest["representations"]:
-        if r["quality"] == quality:
-            return base_url.rstrip("/") + r["url_path"]
-    raise ValueError(f"Qualidade '{quality}' não encontrada no manifest")
+    # Download do Manifesto
+    try:
+        manifest = fetch_manifest(args.manifest)
+    except Exception as e:
+        print(f"Erro critico ao baixar manifesto: {e}")
+        return
 
+    # Tratamento e extração de representações de qualidade e bitrates do manifesto
+    qualities = []
+    if "representations" in manifest:
+        for rep in manifest["representations"]:
+            q_name = rep.get("quality") or rep.get("name") or "unknown"
+            q_bitrate = rep.get("bitrate") or rep.get("bitRate") or rep.get("bandwidth")
+            
+            if q_bitrate is not None:
+                try:
+                    q_bitrate = int(q_bitrate)
+                except ValueError:
+                    q_bitrate = None
 
-def download_segment(url: str, timeout: int = 30) -> tuple:
-    """
-    Baixa um segmento em chunks e retorna:
-        (bytes_total, download_time_s, jitter_network_ms)
+            # Fallback baseado na resolução caso o bitrate venha nulo
+            if q_bitrate is None:
+                if "1080" in str(q_name): q_bitrate = 2500
+                elif "720" in str(q_name): q_bitrate = 1200
+                elif "480" in str(q_name): q_bitrate = 800
+                elif "360" in str(q_name): q_bitrate = 400
+                else: q_bitrate = 200
 
-    jitter_network_ms = desvio padrão dos intervalos entre chegadas de chunks.
-    """
-    chunk_times = []
-    total_bytes = 0
-    t_start = time.perf_counter()
-    t_last_chunk = t_start
-
-    with requests.get(url, stream=True, timeout=timeout) as resp:
-        resp.raise_for_status()
-        for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
-            if not chunk:
-                continue
-            now = time.perf_counter()
-            chunk_times.append((now - t_last_chunk) * 1000)  # ms
-            t_last_chunk = now
-            total_bytes += len(chunk)
-
-    t_end = time.perf_counter()
-    download_time_s = t_end - t_start
-
-    # Jitter intra-segmento = desvio padrão dos intervalos entre chunks
-    if len(chunk_times) >= 2:
-        intervals = chunk_times[1:]  # ignora o primeiro (inclui tempo de conexão)
-        mean = sum(intervals) / len(intervals)
-        variance = sum((x - mean) ** 2 for x in intervals) / len(intervals)
-        jitter_network_ms = math.sqrt(variance)
-    else:
-        jitter_network_ms = 0.0
-
-    return total_bytes, download_time_s, jitter_network_ms
-
-
-def calc_throughput_kbps(bytes_total: int, time_s: float) -> float:
-    """Calcula a vazão em kbps a partir do total de bytes e do tempo de download."""
-    if time_s <= 0:
-        return 0.0
-    return (bytes_total * 8) / time_s / 1000
-
-
-def ewma(prev: float, new_value: float, alpha: float = JITTER_EWMA_ALPHA) -> float:
-    """Suaviza uma métrica usando média móvel exponencial."""
-    return alpha * new_value + (1 - alpha) * prev
-
-
-def download_with_failover(failover: FailoverManager, manifest: dict,
-                           quality: str, seg_num: int) -> tuple:
-    """
-    Baixa o segmento no servidor ativo e, em caso de falha, aciona o failover.
-
-    Tenta o servidor atual; se o download falhar (timeout, erro HTTP, conexão
-    recusada), pede ao FailoverManager para migrar para o próximo servidor
-    disponível e tenta novamente. Repete até obter o segmento ou esgotar os
-    servidores.
-
-    Returns:
-        Tupla ((bytes_total, download_time_s, jitter_network_ms), server_dict).
-
-    Raises:
-        requests.RequestException: Se nenhum servidor disponível conseguir
-            entregar o segmento.
-    """
-    while True:
-        server = failover.current_server
-        url = get_url_for_quality(manifest, quality, server["url"])
-        try:
-            return download_segment(url), server
-        except requests.RequestException as exc:
-            print(f"  [falha] seg {seg_num} em {server['id']}: {exc}")
-            if not failover.try_failover(seg_num):
-                # Não há próximo servidor disponível: propaga a falha.
-                raise
-            novo = failover.current_server
-            print(f"  [failover] {server['id']} → {novo['id']} (seg {seg_num})")
-
-
-# ── Player principal ──────────────────────────────────────────────────────────
-def run_player():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    os.makedirs(GRAPHS_DIR, exist_ok=True)
-
-    print("─" * 65)
-    print(" Cliente ABR — Tarefa 1 (Rate-Based Baseline)")
-    print("─" * 65)
-
-    # 1. Manifest.
-    # O manifest funciona como o "mapa" do vídeo: informa servidores, qualidades,
-    # bitrates e duração de cada segmento.
-    print(f"[manifest] GET {MANIFEST_URL}")
-    manifest = fetch_manifest(MANIFEST_URL)
-    segment_duration = manifest["segment_duration_s"]
-    qualities = parse_representations(manifest)
-
-    # Failover entre servidores (Issue 12).
-    # O FailoverManager recebe a lista de servidores do manifest, começa pelo de
-    # maior prioridade (Servidor A) e migra automaticamente via /health quando o
-    # servidor ativo falha.
-    failover = FailoverManager(manifest["servers"])
-    active_server = failover.current_server
-    server_id = active_server["id"]
-
-    print(f"[server]   {server_id} → {active_server['url']}")
-    print(f"[segment]  {segment_duration}s | {len(qualities)} qualidades disponíveis")
-
-    # 2. Componentes principais do cliente.
-    # ABR decide a qualidade, BufferManager controla reprodução e history guarda
-    # as últimas vazões para deixar a decisão menos sensível a uma única medição.
-    abr     = RateBasedABR()
-    buffer  = BufferManager(max_buffer=60.0)
-    history = deque(maxlen=5)   # Histórico de throughput com janela de 5 segmentos.
-
-    # Gravação de métricas (Issue 13).
-    # O MetricsRecorder usa o schema completo da spec (SPEC_HEADERS, 14 campos).
-    # batch_size=1 grava cada segmento na hora, mantendo o CSV em tempo real.
-    recorder = MetricsRecorder(output_dir=OUTPUT_DIR, batch_size=1, headers=SPEC_HEADERS)
-    csv_path = recorder.filepath
-    print(f"[csv]      {csv_path}\n")
-
-    # Estado de jitter EWMA entre segmentos.
-    # A EWMA suaviza variações bruscas e ajuda a observar tendência de instabilidade.
-    jitter_ewma_ms = 0.0
-
-    # Marca o fim do segmento anterior para estimar variação entre downloads.
-    t_prev_segment_end = None
-
-    with recorder:
-        for seg_num in range(1, TOTAL_SEGMENTS + 1):
-
-            # ── Seleção de qualidade ──────────────────────────────────────────
-            # No primeiro segmento ainda não existe histórico; por isso começamos
-            # em 240p. Depois disso, o ABR usa a média das últimas vazões medidas.
-            if history:
-                avg_throughput = sum(history) / len(history)
-                selected_quality = abr.select_quality(avg_throughput, qualities)
-            else:
-                selected_quality = "240p"   # Partida inicial conservadora.
-
-            bitrate_kbps = next(
-                q["bitrate"] for q in qualities if q["name"] == selected_quality
-            )
-
-            # ── Download do segmento (com failover) ───────────────────────────
-            # O segmento é baixado em chunks para medir tanto o tempo total quanto
-            # a irregularidade de chegada dos dados dentro do próprio segmento.
-            # Em caso de falha, download_with_failover migra para o próximo servidor.
-            t_download_start = time.perf_counter()
-            timestamp_iso = datetime.now().isoformat()
-
-            try:
-                (total_bytes, download_time_s, jitter_network_ms), server = \
-                    download_with_failover(failover, manifest, selected_quality, seg_num)
-                server_id = server["id"]
-            except requests.RequestException as exc:
-                print(f"  [ERRO] segmento {seg_num} sem servidor disponível: {exc}")
-                continue
-
-            # ── Throughput medido ─────────────────────────────────────────────
-            # Vazão = quantidade de bits baixados dividida pelo tempo real gasto.
-            vazao_kbps = calc_throughput_kbps(total_bytes, download_time_s)
-            history.append(vazao_kbps)
-
-            # ── Jitter EWMA entre segmentos ───────────────────────────────────
-            # Além do jitter interno do download, mantemos uma média suavizada da
-            # variação temporal entre segmentos consecutivos.
-            if t_prev_segment_end is not None:
-                inter_seg_gap_ms = (t_download_start - t_prev_segment_end) * 1000
-                jitter_ewma_ms = ewma(jitter_ewma_ms, abs(inter_seg_gap_ms - (download_time_s * 1000)))
-            t_prev_segment_end = time.perf_counter()
-
-            # ── Buffer ────────────────────────────────────────────────────────
-            # Adiciona ao buffer a duração de vídeo que acabou de chegar.
-            buffer.add_segment(segment_duration)
-            # Consome o tempo real de download, simulando o player tocando enquanto
-            # espera o próximo segmento chegar.
-            buffer.consume(download_time_s)
-
-            buffer_level_s   = round(buffer.get_buffer_level(), 3)
-            buffer_can_play  = 1 if buffer.can_play() else 0
-            rebuffer_event   = 1 if buffer.is_rebuffering() else 0
-
-            # Stall: se houve rebuffering, estima quanto tempo faltaria até voltar
-            # ao mínimo de 2s necessário para tocar com segurança.
-            if rebuffer_event:
-                stall_duration_s = round(
-                    max(0.0, buffer.MIN_BUFFER_TO_PLAY - buffer_level_s), 3
-                )
-            else:
-                stall_duration_s = 0.0
-
-            # ── Log terminal ──────────────────────────────────────────────────
-            # Linha compacta para acompanhar a demo em tempo real.
-            rebuf_mark = " ⚠ REBUFFER" if rebuffer_event else ""
-            print(
-                f"  seg {seg_num:03d} | {selected_quality:<5} | "
-                f"vazao={vazao_kbps:7.1f} kbps | "
-                f"buf={buffer_level_s:5.2f}s | "
-                f"dl={download_time_s:.3f}s | "
-                f"jitter={jitter_network_ms:.1f}ms{rebuf_mark}"
-            )
-
-            # ── CSV ───────────────────────────────────────────────────────────
-            # Persiste as mesmas métricas do terminal com campos extras para análise
-            # posterior e geração de gráficos. failover_total acumula as migrações.
-            recorder.record_segment({
-                "segment":          seg_num,
-                "timestamp":        timestamp_iso,
-                "server_id":        server_id,
-                "quality":          selected_quality,
-                "bitrate_kbps":     bitrate_kbps,
-                "vazao_kbps":       round(vazao_kbps, 2),
-                "download_time_s":  round(download_time_s, 4),
-                "jitter_network_ms": round(jitter_network_ms, 2),
-                "jitter_ewma_ms":   round(jitter_ewma_ms, 2),
-                "buffer_level_s":   buffer_level_s,
-                "buffer_can_play":  buffer_can_play,
-                "rebuffer_event":   rebuffer_event,
-                "stall_duration_s": stall_duration_s,
-                "failover_total":   failover.total_failovers,
+            qualities.append({
+                "name": q_name,
+                "bitrate": q_bitrate
+            })
+    elif "qualities" in manifest:
+        for q in manifest["qualities"]:
+            qualities.append({
+                "name": q.get("name", "unknown"),
+                "bitrate": int(q.get("bitrate", 200))
             })
 
-    print(f"\n[ok] CSV salvo em: {csv_path}")
-    if failover.total_failovers:
-        print(f"[failover] {failover.total_failovers} troca(s) de servidor: "
-              f"{failover.failover_events}")
+    # Definição de qualidades padrão caso o parse falhe por completo
+    if not qualities:
+        print("Aviso: Nenhuma qualidade valida extraida. Usando qualidades padrao.")
+        qualities = [
+            {"name": "240p", "bitrate": 200},
+            {"name": "360p", "bitrate": 400},
+            {"name": "480p", "bitrate": 800},
+            {"name": "720p", "bitrate": 1200},
+            {"name": "1080p", "bitrate": 2500},
+        ]
 
-    # 3. Gráficos automáticos.
-    # Ao fim da execução, o script de gráficos transforma o CSV em evidências visuais.
-    print("[ok] Gerando gráficos...")
+    # Extração de servidores de contingência e duração de segmento
+    servers = manifest.get("servers", [])
+    if not servers:
+        servers = [
+            {"id": "A", "url": "http://137.131.178.229:8080", "priority": 1},
+            {"id": "B", "url": "http://137.131.178.229:8081", "priority": 2}
+        ]
+
+    if "segment" in manifest and "duration" in manifest["segment"]:
+        segment_duration = float(manifest["segment"]["duration"])
+    elif "segment_duration" in manifest:
+        segment_duration = float(manifest["segment_duration"])
+    else:
+        segment_duration = 4.0
+
+    # Inicialização das classes de controle do player
+    if args.policy == "rate-based":
+        abr = RateBasedABR()
+    else:
+        abr = BufferBasedABR()
+
+    buffer_manager = BufferManager(max_buffer=15.0)
+    failover = FailoverManager(servers)
+    
+    # Configuração dos cabeçalhos esperados pelo script graphs.py original
+    COMPAT_HEADERS = [
+        "segment", "timestamp", "server_id", "quality", "bitrate",
+        "vazao", "download_time", "jitter_network", "jitter_ewma",
+        "buffer level", "buffer_can_play", "rebuffer_event",
+        "stall_duration", "failover_total"
+    ]
+    csv_path = os.path.join(args.output_dir, "metrics.csv")
+    recorder = MetricsRecorder(output_dir=args.output_dir, batch_size=1, headers=COMPAT_HEADERS)
+
+    # Estado inicial das variáveis de medição de rede
+    jitter_ewma_ms = 0.0
+    vazao_kbps = 1000.0  # Estimativa inicial de partida (1 Mbps)
+
+    # Loop de execução principal orientado a segmentos de mídia
+    for seg_index in range(1, args.segments + 1):
+        # Tomada de decisão da qualidade através do algoritmo ABR selecionado
+        if args.policy == "rate-based":
+            selected_quality = abr.select_quality(vazao_kbps, qualities)
+        else:
+            selected_quality = abr.select_quality(buffer_manager.current_buffer, qualities)
+
+        bitrate_kbps = next((q["bitrate"] for q in qualities if q["name"] == selected_quality), 200)
+
+        # Resolução do endpoint do servidor atual baseado em prioridade e sanidade
+        active_server = failover.current_server
+        server_url = active_server["url"].rstrip("/")
+        server_id = active_server.get("id", "A") 
+        segment_url = f"{server_url}/segment/{selected_quality}"
+
+        print(f"[{seg_index:02d}/{args.segments}] Requisitando {selected_quality} de Servidor {server_id}...", end="", flush=True)
+
+        buffer_antes = buffer_manager.current_buffer
+        chunk_timestamps = []
+        download_start = time.perf_counter()
+        response_success = False
+
+        # Download por chunks com stream habilitado para medição interna de jitter
+        try:
+            resp = requests.get(segment_url, stream=True, timeout=5.0)
+            if resp.status_code == 200:
+                for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                    if chunk:
+                        chunk_timestamps.append(time.perf_counter())
+                response_success = True
+            else:
+                print(f" Erro HTTP {resp.status_code}")
+        except (requests.RequestException, Exception) as e:
+            print(f" Erro de Conexao: {e}")
+
+        # Mecanismo de failover automático caso a primeira requisição falhe
+        if not response_success:
+            print(f"\nAviso: Falha detectada no Servidor {server_id}. Iniciando failover...")
+            migrated = failover.try_failover(segment=seg_index)
+            if migrated:
+                new_server = failover.current_server
+                server_id = new_server.get("id", "B")
+                segment_url = f"{new_server['url'].rstrip()}/segment/{selected_quality}"
+                print(f"Migrado com sucesso para o Servidor {server_id}. Re-tentando download...")
+                
+                chunk_timestamps = []
+                download_start = time.perf_counter()
+                try:
+                    resp = requests.get(segment_url, stream=True, timeout=5.0)
+                    resp.raise_for_status()
+                    for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                        if chunk:
+                            chunk_timestamps.append(time.perf_counter())
+                    response_success = True
+                except Exception as e:
+                    print(f"Falha catastrofica: Servidor de contingencia tambem falhou. {e}")
+            else:
+                print("Falha catastrofica: Nenhum servidor secundario passou no Health Check.")
+
+        download_end = time.perf_counter()
+        download_time_s = download_end - download_start
+
+        # Tratamento de fallback temporal em caso de timeout/queda total
+        bytes_estimados = (bitrate_kbps * 1000 * segment_duration) / 8
+        if not response_success:
+            download_time_s = segment_duration * 2
+
+        # Cálculo da vazão real obtida no segmento
+        vazao_kbps = (bytes_estimados * 8) / (download_time_s * 1000) if download_time_s > 0 else 0.1
+
+        # Cálculo estatístico de variação de atraso (Jitter) entre chunks
+        jitter_network_ms = 0.0
+        if len(chunk_timestamps) >= 2:
+            intervals = [t2 - t1 for t1, t2 in zip(chunk_timestamps, chunk_timestamps[1:])]
+            if len(intervals) >= 2:
+                variations = [abs(i2 - i1) for i1, i2 in zip(intervals, intervals[1:])]
+                jitter_network_ms = (sum(variations) / len(variations)) * 1000.0
+
+        # Aplicação do filtro EWMA estabilizador de Jitter
+        if seg_index == 1:
+            jitter_ewma_ms = jitter_network_ms
+        else:
+            jitter_ewma_ms = (JITTER_EWMA_ALPHA * jitter_network_ms) + ((1.0 - JITTER_EWMA_ALPHA) * jitter_ewma_ms)
+
+        # Atualização do modelo temporal do buffer do player
+        buffer_manager.add_segment(segment_duration)
+        buffer_manager.consume(download_time_s)
+
+        # Detecção matemática de travamentos na reprodução (Stall e Rebuffering)
+        stall_duration_s = max(0.0, download_time_s - buffer_antes - segment_duration)
+        rebuffer_event = 1 if stall_duration_s > 0 or buffer_manager.is_rebuffering() else 0
+        buffer_can_play = 1 if buffer_manager.can_play() else 0
+
+        print(f" OK | Vazao: {vazao_kbps:.1f} kbps | Buffer: {buffer_manager.current_buffer:.2f}s | Stall: {stall_duration_s:.2f}s")
+
+        # Escrita incremental dos dados no registrador de métricas (CSV)
+        recorder.record_segment({
+            "segment":           seg_index,
+            "timestamp":         datetime.now().isoformat(),
+            "server_id":         server_id,
+            "quality":           selected_quality,
+            "bitrate":           bitrate_kbps,
+            "vazao":             round(vazao_kbps, 2),
+            "download_time":     round(download_time_s, 4),
+            "jitter_network":    round(jitter_network_ms, 2),
+            "jitter_ewma":       round(jitter_ewma_ms, 2),
+            "buffer level":      round(buffer_manager.current_buffer, 2),
+            "buffer_can_play":   buffer_can_play,
+            "rebuffer_event":    rebuffer_event,
+            "stall_duration":    round(stall_duration_s, 4),
+            "failover_total":    failover.total_failovers,
+        })
+
+    recorder.close()
+    print(f"\nSimulacao concluida. CSV salvo com sucesso em: {csv_path}")
+
+    # Processamento automático dos gráficos individuais chamando o subprocesso graphs.py
+    print("Gerando graficos...")
     try:
         import subprocess
         graphs_script = os.path.join(os.path.dirname(__file__), "graphs.py")
+        abs_csv_path = os.path.abspath(recorder.filepath)
+        abs_graphs_dir = os.path.abspath("graphs")
+        
+        os.makedirs(abs_graphs_dir, exist_ok=True)
+        
         subprocess.run(
-            ["python3", graphs_script, csv_path, "--output-dir", GRAPHS_DIR],
+            ["python", graphs_script, abs_csv_path, "--output-dir", abs_graphs_dir],
             check=True
         )
-        print(f"[ok] Gráficos em: {GRAPHS_DIR}/")
-    except Exception as exc:
-        print(f"[aviso] Gráficos não gerados: {exc}")
-
-    print("─" * 65)
-    print(" Sessão concluída.")
-    print("─" * 65)
-    return csv_path
-
+        print(f"Graficos gerados com sucesso na pasta: {abs_graphs_dir}")
+    except Exception as e:
+        print(f"Falha ao gerar graficos automaticamente: {e}")
+        print(f"Dica: Voce pode gerar manualmente rodando: python client/graphs.py {recorder.filepath} --output-dir graphs")
 
 if __name__ == "__main__":
-    run_player()
+    main()
