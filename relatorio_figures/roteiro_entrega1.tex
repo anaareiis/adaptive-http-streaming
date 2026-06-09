@@ -1,0 +1,251 @@
+%% Roteiro — Entrega 1 — 5 minutos
+%% pdflatex roteiro_entrega1.tex
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage[top=1.6cm,bottom=1.6cm,left=1.8cm,right=1.8cm,headheight=15pt]{geometry}
+\usepackage[most]{tcolorbox}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{titlesec}
+
+\definecolor{cfala}{RGB}{25,90,170}
+\definecolor{cacao}{RGB}{15,130,55}
+\definecolor{catencao}{RGB}{190,70,15}
+\definecolor{ctempo}{RGB}{110,50,155}
+\definecolor{bgfala}{RGB}{232,242,255}
+\definecolor{bgacao}{RGB}{232,250,238}
+\definecolor{bgatencao}{RGB}{255,240,225}
+\definecolor{cinzabg}{RGB}{248,248,248}
+
+\tcbset{base/.style={arc=3pt,boxrule=1.5pt,left=8pt,right=8pt,top=5pt,bottom=5pt,
+  before upper={\parindent0pt}}}
+
+\newtcolorbox{falabox}{base,colback=bgfala,colframe=cfala,
+  title={\textbf{\textcolor{white}{FALA}}},coltitle=white,
+  attach boxed title to top left={yshift=-2mm,xshift=6pt},
+  boxed title style={colback=cfala,arc=2pt,boxrule=0pt}}
+
+\newtcolorbox{acaobox}{base,colback=bgacao,colframe=cacao,
+  title={\textbf{\textcolor{white}{AÇÃO}}},coltitle=white,
+  attach boxed title to top left={yshift=-2mm,xshift=6pt},
+  boxed title style={colback=cacao,arc=2pt,boxrule=0pt}}
+
+\newtcolorbox{alertabox}{base,colback=bgatencao,colframe=catencao,
+  title={\textbf{\textcolor{white}{ATENÇÃO}}},coltitle=white,
+  attach boxed title to top left={yshift=-2mm,xshift=6pt},
+  boxed title style={colback=catencao,arc=2pt,boxrule=0pt}}
+
+\newcommand{\cmd}[1]{\texttt{\textbf{#1}}}
+
+\newcommand{\acaoinline}[1]{%
+  \par\vspace{3pt}%
+  \noindent\colorbox{cacao!18}{%
+    \parbox{\dimexpr\linewidth-2\fboxsep}{%
+      \small\textcolor{cacao}{\textbf{[FAZER:}} #1\textcolor{cacao}{\textbf{]}}}}%
+  \par\vspace{3pt}}
+
+\newcommand{\tempo}[2]{%
+  \vspace{5pt}
+  \begin{tcolorbox}[base,colback=ctempo!8,colframe=ctempo,boxrule=1pt,
+    left=6pt,right=6pt,top=2pt,bottom=2pt]
+  \textcolor{ctempo}{\textbf{$\blacktriangleright$ #1}}%
+  \hfill\textcolor{ctempo}{\small\textit{#2}}
+  \end{tcolorbox}\vspace{3pt}}
+
+\titleformat{\section}{\normalsize\bfseries\color{cfala}}{}{0pt}{}
+  [{\color{cfala}\titlerule[0.8pt]}]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+
+\pagestyle{fancy}\fancyhf{}
+\lhead{\textbf{TR2 — Entrega 1} \textbar\ Roteiro 5 min}
+\rhead{\textbf{Adaptive HTTP Streaming}}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+\begin{tcolorbox}[colback=cfala!10,colframe=cfala,boxrule=2pt,arc=4pt,
+  left=10pt,right=10pt,top=8pt,bottom=8pt]
+\begin{center}
+  {\LARGE\bfseries\color{cfala} Roteiro — Entrega 1}\\[4pt]
+  {\large Rate-Based ABR $\cdot$ Cliente funcional $\cdot$ Demo ao vivo}\\[2pt]
+  \textbf{5 minutos} \quad|\quad
+  \small\textcolor{cfala}{FALA = dizer}\quad
+  \textcolor{cacao}{AÇÃO = fazer na tela}\quad
+  \textcolor{catencao}{ATENÇÃO = cuidado}
+\end{center}
+\end{tcolorbox}
+
+\vspace{4pt}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{1. Abertura}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\tempo{0:00 – 0:40}{Contexto rápido}
+
+\begin{acaobox}
+Antes de começar já ter aberto:\\
+\cmd{Terminal} na pasta \cmd{client/} \quad|\quad
+\cmd{abr.py} no editor (linha 18) \quad|\quad
+\cmd{Wireshark} capturando em \cmd{wlp1s0}
+\end{acaobox}
+
+\vspace{3pt}
+
+\begin{falabox}
+``Vamos mostrar o cliente de streaming adaptativo da Entrega 1 rodando contra
+o servidor real. O cliente baixa o manifest, mede a vazão de cada segmento,
+escolhe a qualidade pelo algoritmo Rate-Based ABR e grava tudo em CSV com
+gráficos automáticos.''
+\end{falabox}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{2. Código — ABR e Buffer (rápido)}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\tempo{0:40 – 1:30}{Mostrar o código}
+
+\begin{acaobox}
+Ir para o editor $\to$ \cmd{abr.py} linha 52 — destacar a linha \cmd{safety\_limit = throughput\_kbps * self.SAFETY\_FACTOR}\\[4pt]
+Depois ir para \cmd{buffer\_manager.py} linha 45 (\cmd{add\_segment}) e linha 65 (\cmd{consume})
+\end{acaobox}
+
+\vspace{3pt}
+
+\begin{falabox}
+``O ABR calcula \texttt{safety\_limit = vazão × 0,85} e escolhe a maior qualidade
+cujo bitrate caiba nesse limite — os 15\% de margem evitam rebuffering em
+flutuações de rede.
+
+O \texttt{BufferManager} faz \texttt{buffer += 2s} a cada segmento recebido e
+\texttt{buffer -= tempo\_de\_download} pelo tempo que o player ficou esperando.
+Se zerar, rebuffering. Se $\geq$ 2s, o campo \texttt{buffer\_can\_play} é 1.''
+\end{falabox}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{3. Demo ao vivo — cliente + Wireshark}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\tempo{1:30 – 4:00}{Demo principal}
+
+\begin{alertabox}
+Wireshark já deve estar rodando. Aplicar o filtro agora se ainda não aplicou:\\
+\cmd{ip.addr == 137.131.178.229}
+\end{alertabox}
+
+\vspace{3pt}
+
+\begin{acaobox}
+Rodar o cliente no terminal:\\[4pt]
+\cmd{python3 main.py}\\[4pt]
+Aguardar o seg 001 aparecer e começar a falar.
+\end{acaobox}
+
+\vspace{3pt}
+
+\begin{falabox}
+``O manifest foi baixado — no Wireshark viram o SYN e o GET /manifest.
+
+\acaoinline{Apontar para a linha seg 001 no terminal}
+
+Segmento 001 saiu em 240p, cold start sem histórico ainda. A partir do 002 o
+ABR já tem uma medição e sobe a qualidade. Olhem as colunas: \texttt{vazao}
+é a banda medida, \texttt{buf} é o buffer crescendo em segundos — ele sobe
+porque baixamos mais rápido do que a taxa de reprodução — e \texttt{dl} é o
+tempo real de cada download.
+
+\acaoinline{Alternar para o Wireshark}
+
+No Wireshark cada rajada de pacotes TCP é um segmento. O intervalo entre
+rajadas é o processamento do cliente. Quando o jitter no terminal sobe, dá
+para ver o espaçamento irregular entre os pacotes aqui.
+
+\acaoinline{Voltar para o terminal e deixar terminar}
+
+A qualidade estabiliza em 480p porque com o servidor em 2 Mbps e o safety
+factor, a vazão média de 1.100 kbps fica abaixo do limiar de 1.500 kbps da
+720p. Deficiência do Rate-Based puro que vamos resolver na Entrega 2.''
+\end{falabox}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{4. CSV e gráfico}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\tempo{4:00 – 4:45}{Evidências}
+
+\begin{acaobox}
+\cmd{cat ../logs/\$(ls -t ../logs/ | head -1) | column -t -s, | head -8}\\[4pt]
+\cmd{xdg-open ../graphs/throughput\_timeline.png \&}
+\end{acaobox}
+
+\vspace{3pt}
+
+\begin{falabox}
+``CSV com as 14 colunas da especificação — \texttt{buffer\_can\_play} em 1 em
+todos os segmentos, sem nenhum rebuffering. O gráfico mostra a vazão e a
+qualidade selecionada: correlação direta, e o buffer subindo continuamente.
+Esse é o baseline da Entrega 1.''
+\end{falabox}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{5. Encerramento}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\tempo{4:45 – 5:00}{Fechar}
+
+\begin{falabox}
+``Pronto. Cliente funcional, CSV gerado, gráficos automáticos. Alguma pergunta?''
+\end{falabox}
+
+\vspace{6pt}
+\noindent\rule{\textwidth}{0.8pt}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section*{Respostas rápidas}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{tcolorbox}[colback=cinzabg,colframe=gray!50,boxrule=0.8pt,arc=3pt,
+  left=8pt,right=8pt,top=5pt,bottom=5pt]
+\begin{tabularx}{\textwidth}{>{\bfseries}p{4.5cm}X}
+\toprule
+Pergunta & Resposta \\
+\midrule
+Onde o ABR decide? &
+  \cmd{abr.py} linha 52 — \cmd{safety\_limit = throughput * 0.85}, itera qualidades ordenadas por bitrate. \\
+\addlinespace
+Como o buffer é calculado? &
+  \cmd{buffer += 2s} (segmento recebido) $-$ \cmd{download\_time\_s} (tempo de espera). \\
+\addlinespace
+O que é \cmd{buffer\_can\_play}? &
+  1 se \cmd{buffer $\geq$ 2s}. Indica reprodução contínua sem interrupção. \\
+\addlinespace
+Por que parou em 480p? &
+  Banda 2 Mbps $\times$ 0,85 $\approx$ 935 kbps efetivos $<$ 1.500 kbps da 720p. \\
+\addlinespace
+O que é jitter EWMA? &
+  Média móvel exponencial (alpha=0,2) da variação entre segmentos consecutivos. \\
+\bottomrule
+\end{tabularx}
+\end{tcolorbox}
+
+\vspace{4pt}
+\begin{tcolorbox}[colback=bgatencao,colframe=catencao,boxrule=0.8pt,arc=3pt,
+  left=8pt,right=8pt,top=4pt,bottom=4pt]
+\small
+\textbf{Checklist pré-apresentação:}\quad
+\cmd{curl http://137.131.178.229:8080/health}\quad$\cdot$\quad
+Wireshark em \cmd{wlp1s0}\quad$\cdot$\quad
+Teste rápido \cmd{python3 main.py}\quad$\cdot$\quad
+Gráficos de backup em \cmd{graphs/}
+\end{tcolorbox}
+
+\end{document}

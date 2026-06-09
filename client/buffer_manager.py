@@ -1,22 +1,24 @@
-"""Buffer management for adaptive streaming."""
+"""Gerenciamento do buffer de vídeo para streaming adaptativo."""
 
 from typing import List, Dict, Optional
 from datetime import datetime
 
 
 class BufferManager:
-    """Manages video buffer for streaming playback."""
+    """Controla o nível do buffer e detecta eventos de rebuffering."""
 
-    # Constants for buffer management
-    MIN_BUFFER_TO_PLAY = 2.0  # Minimum buffer in seconds to start playback
-    REBUFFER_THRESHOLD = 0.0  # Buffer level that triggers rebuffering
+    # Constantes de controle do buffer.
+    # O player só é considerado apto a tocar quando tem pelo menos 2s acumulados.
+    MIN_BUFFER_TO_PLAY = 2.0
+    # Quando o buffer chega a 0s, consideramos que houve rebuffering/travamento.
+    REBUFFER_THRESHOLD = 0.0
 
     def __init__(self, max_buffer: float = 60.0):
         """
-        Initialize the buffer manager.
+        Inicializa o gerenciador com um tamanho máximo de buffer.
 
-        Args:
-            max_buffer: Maximum buffer capacity in seconds (default: 60s)
+        Argumentos:
+            max_buffer: Capacidade máxima do buffer em segundos. O padrão é 60s.
         """
         if max_buffer <= 0:
             raise ValueError("max_buffer must be positive")
@@ -29,34 +31,41 @@ class BufferManager:
 
     def add_segment(self, duration: float) -> None:
         """
-        Add a segment to the buffer.
+        Adiciona um segmento baixado ao buffer.
 
-        Args:
-            duration: Duration of the segment in seconds
+        Cada segmento representa alguns segundos de vídeo pronto para reprodução.
+        Por isso, quando o download termina, somamos essa duração ao buffer atual.
 
-        Raises:
-            ValueError: If duration is not positive
+        Argumentos:
+            duration: Duração do segmento em segundos.
+
+        Erros:
+            ValueError: Se a duração informada não for positiva.
         """
         if duration <= 0:
             raise ValueError("Segment duration must be positive")
 
-        # Add segment to buffer, capped at max_buffer
+        # Soma a duração do segmento, mas nunca deixa passar da capacidade máxima.
         old_buffer = self.current_buffer
         self.current_buffer = min(self.current_buffer + duration, self.max_buffer)
 
-        # Check if this addition caused buffer overflow
+        # Se chegou no limite, apenas mantemos o buffer cheio; não há estouro real.
         if self.current_buffer == self.max_buffer and old_buffer < self.max_buffer:
-            pass  # Buffer is now full, no issue
+            pass
 
     def consume(self, time_elapsed: float) -> None:
         """
-        Consume buffer during playback.
+        Consome buffer enquanto o player está reproduzindo/esperando.
 
-        Args:
-            time_elapsed: Time elapsed in seconds
+        No cliente principal, esse tempo costuma ser o tempo real de download.
+        Enquanto um novo segmento baixa, o vídeo que já estava no buffer continua
+        sendo consumido.
 
-        Raises:
-            ValueError: If time_elapsed is not positive
+        Argumentos:
+            time_elapsed: Tempo decorrido em segundos.
+
+        Erros:
+            ValueError: Se o tempo informado não for positivo.
         """
         if time_elapsed <= 0:
             raise ValueError("time_elapsed must be positive")
@@ -65,41 +74,41 @@ class BufferManager:
         self.current_buffer = max(0.0, self.current_buffer - time_elapsed)
         self.total_consumed += time_elapsed
 
-        # Detect rebuffering: when buffer goes from > 0 to <= 0
+        # Detecta rebuffering quando o buffer sai de um valor positivo e chega a 0.
         if old_buffer > self.REBUFFER_THRESHOLD and self.current_buffer <= self.REBUFFER_THRESHOLD:
             self._record_rebuffer()
 
     def can_play(self) -> bool:
         """
-        Check if there's enough buffer to continue playback.
+        Verifica se existe buffer suficiente para reprodução contínua.
 
-        Returns:
-            True if buffer >= MIN_BUFFER_TO_PLAY, False otherwise
+        Retorna:
+            True se o buffer tiver pelo menos MIN_BUFFER_TO_PLAY segundos.
         """
         return self.current_buffer >= self.MIN_BUFFER_TO_PLAY
 
     def get_buffer_level(self) -> float:
         """
-        Get current buffer level in seconds.
+        Retorna o nível atual do buffer em segundos.
 
-        Returns:
-            Current buffer duration in seconds
+        Retorna:
+            Quantidade de vídeo já armazenada para reprodução.
         """
         return self.current_buffer
 
     def get_buffer_percentage(self) -> float:
         """
-        Get buffer as percentage of max capacity.
+        Retorna o uso do buffer como porcentagem da capacidade máxima.
 
-        Returns:
-            Percentage (0-100) of buffer utilization
+        Retorna:
+            Porcentagem de ocupação do buffer, de 0 a 100.
         """
         if self.max_buffer == 0:
             return 0.0
         return (self.current_buffer / self.max_buffer) * 100
 
     def _record_rebuffer(self) -> None:
-        """Record a rebuffering event."""
+        """Registra um evento de rebuffering com timestamp e contador."""
         self.rebuffer_count += 1
         event = {
             "timestamp": datetime.now(),
@@ -110,28 +119,28 @@ class BufferManager:
 
     def get_rebuffer_count(self) -> int:
         """
-        Get total number of rebuffering events.
+        Retorna o total de eventos de rebuffering.
 
-        Returns:
-            Number of times rebuffering occurred
+        Retorna:
+            Quantidade de vezes em que o buffer esvaziou.
         """
         return self.rebuffer_count
 
     def get_rebuffer_history(self) -> List[Dict]:
         """
-        Get complete rebuffering history.
+        Retorna o histórico completo de rebuffering.
 
-        Returns:
-            List of rebuffering events with timestamp and details
+        Retorna:
+            Lista de eventos com timestamp, nível de buffer e número do evento.
         """
         return self.rebuffer_history.copy()
 
     def get_last_rebuffer(self) -> Optional[Dict]:
         """
-        Get the last rebuffering event.
+        Retorna o último evento de rebuffering.
 
-        Returns:
-            Last rebuffer event or None if never rebuffered
+        Retorna:
+            Último evento registrado ou None se nunca houve rebuffering.
         """
         if self.rebuffer_history:
             return self.rebuffer_history[-1].copy()
@@ -139,14 +148,14 @@ class BufferManager:
 
     def is_rebuffering(self) -> bool:
         """
-        Check if currently in rebuffering state.
+        Verifica se o player está em estado de rebuffering.
 
-        A stream is in rebuffering state when:
-        - Buffer is exhausted (<=0)
-        - AND we have attempted playback (rebuffer_count > 0 or total_consumed > 0)
+        A reprodução é considerada travada quando:
+        - o buffer está esgotado;
+        - e o player já tentou consumir algum conteúdo.
 
-        Returns:
-            True if in rebuffering state
+        Retorna:
+            True se o estado atual representa rebuffering.
         """
         return (
             self.current_buffer <= self.REBUFFER_THRESHOLD
@@ -155,10 +164,10 @@ class BufferManager:
 
     def fill_buffer(self, duration: float) -> None:
         """
-        Fill buffer with multiple segments rapidly (for testing/simulation).
+        Preenche o buffer rapidamente, útil em testes e simulações.
 
-        Args:
-            duration: Total duration to add in seconds
+        Argumentos:
+            duration: Duração total a adicionar em segundos.
         """
         if duration <= 0:
             raise ValueError("duration must be positive")
@@ -167,10 +176,10 @@ class BufferManager:
 
     def drain_buffer(self, duration: float) -> None:
         """
-        Drain buffer (for testing/simulation).
+        Esvazia parte do buffer, útil em testes e simulações.
 
-        Args:
-            duration: Duration to drain in seconds
+        Argumentos:
+            duration: Duração a remover do buffer, em segundos.
         """
         if duration <= 0:
             raise ValueError("duration must be positive")
@@ -178,12 +187,12 @@ class BufferManager:
         old_buffer = self.current_buffer
         self.current_buffer = max(0.0, self.current_buffer - duration)
 
-        # Check for rebuffering
+        # Também verifica rebuffering quando o esvaziamento é feito manualmente.
         if old_buffer > self.REBUFFER_THRESHOLD and self.current_buffer <= self.REBUFFER_THRESHOLD:
             self._record_rebuffer()
 
     def reset(self) -> None:
-        """Reset buffer to empty state and clear history."""
+        """Reinicia o buffer, contadores e histórico de rebuffering."""
         self.current_buffer = 0.0
         self.rebuffer_count = 0
         self.rebuffer_history = []
@@ -191,10 +200,10 @@ class BufferManager:
 
     def get_stats(self) -> Dict:
         """
-        Get comprehensive buffer statistics.
+        Retorna um resumo com as principais estatísticas do buffer.
 
-        Returns:
-            Dictionary with buffer metrics
+        Retorna:
+            Dicionário com nível atual, porcentagem, rebuffering e consumo total.
         """
         return {
             "current_buffer": self.current_buffer,
@@ -207,7 +216,7 @@ class BufferManager:
         }
 
     def __repr__(self) -> str:
-        """Return string representation of buffer manager."""
+        """Retorna uma representação resumida do estado do buffer."""
         return (
             f"BufferManager(buffer={self.current_buffer:.1f}s/"
             f"{self.max_buffer:.1f}s, "
