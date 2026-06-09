@@ -9,6 +9,41 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
+# Cabeçalho legado (protótipo inicial) — mantido como padrão para garantir
+# compatibilidade retroativa com os testes e CSVs já existentes.
+LEGACY_HEADERS = [
+    "segment_id",
+    "timestamp",
+    "quality",
+    "bitrate_kbps",
+    "throughput_kbps",
+    "buffer_level_secs",
+    "rebuffering_occurred",
+    "quality_changed",
+]
+
+# Schema completo exigido pela especificação do projeto (14 campos).
+# Cobre jitter, failover e play contínuo. Os nomes seguem o schema já usado
+# pelo cliente real (main.py) e lido por graphs.py — em particular "vazao_kbps"
+# é mantido sem acento para preservar a compatibilidade com esse pipeline.
+SPEC_HEADERS = [
+    "segment",            # número sequencial do segmento
+    "timestamp",          # horário ISO 8601
+    "server_id",          # id do servidor ("A" ou "B")
+    "quality",            # qualidade selecionada pelo ABR
+    "bitrate_kbps",       # bitrate nominal da representação
+    "vazao_kbps",         # vazão medida neste segmento
+    "download_time_s",    # tempo de download do segmento
+    "jitter_network_ms",  # variação de latência entre chunks do mesmo segmento
+    "jitter_ewma_ms",     # EWMA da variação entre segmentos consecutivos
+    "buffer_level_s",     # nível estimado do buffer em segundos
+    "buffer_can_play",    # 1 se buffer >= mínimo para play contínuo, 0 caso contrário
+    "rebuffer_event",     # 1 se ocorreu rebuffering neste segmento
+    "stall_duration_s",   # duração do stall em segundos (0 se não houve)
+    "failover_total",     # número acumulado de failovers até este segmento
+]
+
+
 @dataclass
 class ThroughputMeasurement:
     """Data class for a single throughput measurement."""
@@ -235,30 +270,30 @@ class ThroughputMeter:
 class MetricsRecorder:
     """Gera a coleta de métricas de streaming e grava em arquivos CSV."""
 
-    def __init__(self, output_dir: str = "logs", batch_size: int = 5):
+    def __init__(
+        self,
+        output_dir: str = "logs",
+        batch_size: int = 5,
+        headers: Optional[List[str]] = None,
+    ):
         """
         Inicializa o gravador de métricas.
 
         Args:
             output_dir: Diretório onde os arquivos de log serão salvos.
             batch_size: Quantidade de registros na memória antes de descarregar (flush) no CSV.
+            headers: Lista de colunas do CSV. Se None, usa o cabeçalho legado
+                (LEGACY_HEADERS) para manter compatibilidade com os testes
+                existentes. O cliente real (main.py) passa SPEC_HEADERS.
         """
         self.output_dir = output_dir
         self.batch_size = batch_size
         self.buffer_data: List[Dict[str, Any]] = []
-        
-        # Definição das colunas
-        self.headers = [
-            "segment_id", 
-            "timestamp", 
-            "quality", 
-            "bitrate_kbps", 
-            "throughput_kbps", 
-            "buffer_level_secs", 
-            "rebuffering_occurred", 
-            "quality_changed"
-        ]
-        
+
+        # Definição das colunas: usa o cabeçalho informado ou, na ausência dele,
+        # o legado (backward compat com os CSVs do protótipo inicial).
+        self.headers = list(headers) if headers is not None else list(LEGACY_HEADERS)
+
         # Cria a pasta de logs se ela não existir
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
