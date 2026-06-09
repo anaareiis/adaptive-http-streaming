@@ -4,7 +4,6 @@ Conecta ao servidor real, baixa segmentos, mede vazão, gerencia buffer e grava 
 """
 
 import os
-import csv
 import math
 import time
 import requests
@@ -13,6 +12,8 @@ from datetime import datetime
 
 from abr import RateBasedABR
 from buffer_manager import BufferManager
+from failover import FailoverManager
+from metrics import MetricsRecorder, SPEC_HEADERS
 
 # ── Configurações ─────────────────────────────────────────────────────────────
 MANIFEST_URL    = "http://137.131.178.229:8080/manifest"
@@ -97,22 +98,41 @@ def ewma(prev: float, new_value: float, alpha: float = JITTER_EWMA_ALPHA) -> flo
     return alpha * new_value + (1 - alpha) * prev
 
 
+def download_with_failover(failover: FailoverManager, manifest: dict,
+                           quality: str, seg_num: int) -> tuple:
+    """
+    Baixa o segmento no servidor ativo e, em caso de falha, aciona o failover.
+
+    Tenta o servidor atual; se o download falhar (timeout, erro HTTP, conexão
+    recusada), pede ao FailoverManager para migrar para o próximo servidor
+    disponível e tenta novamente. Repete até obter o segmento ou esgotar os
+    servidores.
+
+    Returns:
+        Tupla ((bytes_total, download_time_s, jitter_network_ms), server_dict).
+
+    Raises:
+        requests.RequestException: Se nenhum servidor disponível conseguir
+            entregar o segmento.
+    """
+    while True:
+        server = failover.current_server
+        url = get_url_for_quality(manifest, quality, server["url"])
+        try:
+            return download_segment(url), server
+        except requests.RequestException as exc:
+            print(f"  [falha] seg {seg_num} em {server['id']}: {exc}")
+            if not failover.try_failover(seg_num):
+                # Não há próximo servidor disponível: propaga a falha.
+                raise
+            novo = failover.current_server
+            print(f"  [failover] {server['id']} → {novo['id']} (seg {seg_num})")
+
+
 # ── Player principal ──────────────────────────────────────────────────────────
 def run_player():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(GRAPHS_DIR, exist_ok=True)
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = os.path.join(OUTPUT_DIR, f"metrics_{ts}.csv")
-
-    # Campos exigidos pela especificação.
-    # Cada linha do CSV representa um segmento baixado e o estado do player naquele momento.
-    fieldnames = [
-        "segment", "timestamp", "server_id", "quality", "bitrate_kbps",
-        "vazao_kbps", "download_time_s", "jitter_network_ms", "jitter_ewma_ms",
-        "buffer_level_s", "buffer_can_play", "rebuffer_event",
-        "stall_duration_s", "failover_total",
-    ]
 
     print("─" * 65)
     print(" Cliente ABR — Tarefa 1 (Rate-Based Baseline)")
@@ -126,16 +146,16 @@ def run_player():
     segment_duration = manifest["segment_duration_s"]
     qualities = parse_representations(manifest)
 
-    # Servidor ativo.
-    # Nesta tarefa usamos o servidor de maior prioridade, sem troca automática.
-    servers = sorted(manifest["servers"], key=lambda s: s["priority"])
-    active_server = servers[0]
-    base_url = active_server["url"]
+    # Failover entre servidores (Issue 12).
+    # O FailoverManager recebe a lista de servidores do manifest, começa pelo de
+    # maior prioridade (Servidor A) e migra automaticamente via /health quando o
+    # servidor ativo falha.
+    failover = FailoverManager(manifest["servers"])
+    active_server = failover.current_server
     server_id = active_server["id"]
 
-    print(f"[server]   {server_id} → {base_url}")
+    print(f"[server]   {server_id} → {active_server['url']}")
     print(f"[segment]  {segment_duration}s | {len(qualities)} qualidades disponíveis")
-    print(f"[csv]      {csv_path}\n")
 
     # 2. Componentes principais do cliente.
     # ABR decide a qualidade, BufferManager controla reprodução e history guarda
@@ -144,6 +164,13 @@ def run_player():
     buffer  = BufferManager(max_buffer=60.0)
     history = deque(maxlen=5)   # Histórico de throughput com janela de 5 segmentos.
 
+    # Gravação de métricas (Issue 13).
+    # O MetricsRecorder usa o schema completo da spec (SPEC_HEADERS, 14 campos).
+    # batch_size=1 grava cada segmento na hora, mantendo o CSV em tempo real.
+    recorder = MetricsRecorder(output_dir=OUTPUT_DIR, batch_size=1, headers=SPEC_HEADERS)
+    csv_path = recorder.filepath
+    print(f"[csv]      {csv_path}\n")
+
     # Estado de jitter EWMA entre segmentos.
     # A EWMA suaviza variações bruscas e ajuda a observar tendência de instabilidade.
     jitter_ewma_ms = 0.0
@@ -151,12 +178,7 @@ def run_player():
     # Marca o fim do segmento anterior para estimar variação entre downloads.
     t_prev_segment_end = None
 
-    failover_total = 0
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-
+    with recorder:
         for seg_num in range(1, TOTAL_SEGMENTS + 1):
 
             # ── Seleção de qualidade ──────────────────────────────────────────
@@ -171,18 +193,20 @@ def run_player():
             bitrate_kbps = next(
                 q["bitrate"] for q in qualities if q["name"] == selected_quality
             )
-            url = get_url_for_quality(manifest, selected_quality, base_url)
 
-            # ── Download do segmento ──────────────────────────────────────────
+            # ── Download do segmento (com failover) ───────────────────────────
             # O segmento é baixado em chunks para medir tanto o tempo total quanto
             # a irregularidade de chegada dos dados dentro do próprio segmento.
+            # Em caso de falha, download_with_failover migra para o próximo servidor.
             t_download_start = time.perf_counter()
             timestamp_iso = datetime.now().isoformat()
 
             try:
-                total_bytes, download_time_s, jitter_network_ms = download_segment(url)
+                (total_bytes, download_time_s, jitter_network_ms), server = \
+                    download_with_failover(failover, manifest, selected_quality, seg_num)
+                server_id = server["id"]
             except requests.RequestException as exc:
-                print(f"  [ERRO] segmento {seg_num}: {exc}")
+                print(f"  [ERRO] segmento {seg_num} sem servidor disponível: {exc}")
                 continue
 
             # ── Throughput medido ─────────────────────────────────────────────
@@ -231,8 +255,8 @@ def run_player():
 
             # ── CSV ───────────────────────────────────────────────────────────
             # Persiste as mesmas métricas do terminal com campos extras para análise
-            # posterior e geração de gráficos.
-            writer.writerow({
+            # posterior e geração de gráficos. failover_total acumula as migrações.
+            recorder.record_segment({
                 "segment":          seg_num,
                 "timestamp":        timestamp_iso,
                 "server_id":        server_id,
@@ -246,11 +270,13 @@ def run_player():
                 "buffer_can_play":  buffer_can_play,
                 "rebuffer_event":   rebuffer_event,
                 "stall_duration_s": stall_duration_s,
-                "failover_total":   failover_total,
+                "failover_total":   failover.total_failovers,
             })
-            csvfile.flush()   # Garante que os dados apareçam no CSV em tempo real.
 
     print(f"\n[ok] CSV salvo em: {csv_path}")
+    if failover.total_failovers:
+        print(f"[failover] {failover.total_failovers} troca(s) de servidor: "
+              f"{failover.failover_events}")
 
     # 3. Gráficos automáticos.
     # Ao fim da execução, o script de gráficos transforma o CSV em evidências visuais.
