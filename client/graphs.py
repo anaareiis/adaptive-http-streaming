@@ -52,7 +52,6 @@ BUFFER_ALIASES = (
     "buffer",
     "current_buffer",
     "buffer_level_secs",
-    "buffer_level_s",
 )
 REBUFFER_ALIASES = (
     "rebuffer",

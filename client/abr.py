@@ -1,17 +1,17 @@
-"""Implementação do algoritmo Adaptive Bitrate (ABR)."""
+"""Adaptive Bitrate (ABR) algorithm implementation."""
 
 from typing import List, Dict, Optional
 from datetime import datetime
 
 
 class RateBasedABR:
-    """Algoritmo ABR baseado em vazão para seleção de qualidade."""
+    """Rate-based ABR algorithm for quality selection."""
 
-    SAFETY_FACTOR = 0.85  # Margem de segurança de 15% para evitar escolher acima da rede real
+    SAFETY_FACTOR = 0.85  # 15% safety margin
     DEFAULT_MIN_QUALITY = "240p"
 
     def __init__(self):
-        """Inicializa o algoritmo e guarda o histórico de decisões."""
+        """Initialize the rate-based ABR algorithm."""
         self.decision_history = []
         self.current_quality = None
 
@@ -19,23 +19,23 @@ class RateBasedABR:
         self, throughput_kbps: float, qualities: List[Dict]
     ) -> str:
         """
-        Seleciona a qualidade com base na vazão observada.
+        Select quality based on observed throughput.
 
-        Algoritmo:
-        1. Calcula o limite seguro: vazão * SAFETY_FACTOR.
-        2. Procura a maior qualidade cujo bitrate seja menor ou igual ao limite.
-        3. Se nenhuma qualidade couber, usa a menor qualidade disponível.
+        Algorithm:
+        1. Calculate safety limit: throughput * SAFETY_FACTOR
+        2. Find the highest quality with bitrate <= limit
+        3. If no quality fits, fallback to minimum quality (240p)
 
-        Argumentos:
-            throughput_kbps: Vazão medida em kbps.
-            qualities: Lista de qualidades com os campos 'name' e 'bitrate'.
+        Args:
+            throughput_kbps: Measured throughput in kbps
+            qualities: List of quality dicts with 'name' and 'bitrate' fields
 
-        Retorna:
-            Nome da qualidade selecionada, por exemplo '240p' ou '720p'.
+        Returns:
+            Selected quality name (e.g., '240p', '720p')
 
-        Erros:
-            ValueError: Se a lista de qualidades estiver vazia ou malformada.
-            TypeError: Se throughput_kbps não for numérico.
+        Raises:
+            ValueError: If qualities list is empty or invalid
+            TypeError: If throughput_kbps is not numeric
         """
         if not isinstance(throughput_kbps, (int, float)):
             raise TypeError(f"throughput_kbps must be numeric, got {type(throughput_kbps)}")
@@ -43,36 +43,34 @@ class RateBasedABR:
         if not qualities or len(qualities) == 0:
             raise ValueError("Qualities list is empty")
 
-        # Valida se cada qualidade tem o formato esperado pelo algoritmo.
+        # Validate quality structure
         for q in qualities:
             if not isinstance(q, dict) or "name" not in q or "bitrate" not in q:
                 raise ValueError(f"Invalid quality format: {q}")
 
-        # Aplica uma margem de segurança para não usar 100% da vazão medida.
-        # Isso reduz a chance de rebuffering quando a rede oscila logo depois.
+        # Calculate safety limit
         safety_limit = throughput_kbps * self.SAFETY_FACTOR
 
-        # Ordena as qualidades da menor para a maior taxa de bits.
-        # Assim conseguimos percorrer todas e ficar com a melhor que ainda cabe.
+        # Sort qualities by bitrate (ascending)
         sorted_qualities = sorted(qualities, key=lambda q: q["bitrate"])
 
-        # Seleciona a maior qualidade cujo bitrate não ultrapassa o limite seguro.
+        # Find the highest quality that fits within the limit
         selected_quality = None
         for quality in sorted_qualities:
             if quality["bitrate"] <= safety_limit:
                 selected_quality = quality["name"]
 
-        # Caso nem a menor qualidade caiba no limite, usa um fallback conservador.
+        # Fallback to minimum quality if none fit
         if selected_quality is None:
-            # Dá preferência para 240p, que é a qualidade mínima esperada no projeto.
+            # Check if minimum quality exists
             min_qualities = [q for q in qualities if q["name"] == self.DEFAULT_MIN_QUALITY]
             if min_qualities:
                 selected_quality = self.DEFAULT_MIN_QUALITY
             else:
-                # Se 240p não existir no manifesto, usa a menor qualidade disponível.
+                # If 240p doesn't exist, use the absolute minimum
                 selected_quality = sorted_qualities[0]["name"]
 
-        # Registra a decisão para análise posterior e para contar trocas de qualidade.
+        # Record decision
         self._record_decision(throughput_kbps, safety_limit, selected_quality)
         self.current_quality = selected_quality
 
@@ -82,12 +80,12 @@ class RateBasedABR:
         self, throughput: float, limit: float, quality: str
     ) -> None:
         """
-        Registra uma decisão de seleção de qualidade no histórico.
+        Record a quality selection decision in history.
 
-        Argumentos:
-            throughput: Vazão medida no momento da decisão.
-            limit: Limite seguro usado pelo algoritmo.
-            quality: Qualidade selecionada.
+        Args:
+            throughput: Measured throughput
+            limit: Safety limit used
+            quality: Selected quality
         """
         decision = {
             "timestamp": datetime.now(),
@@ -99,19 +97,19 @@ class RateBasedABR:
 
     def get_decision_history(self) -> List[Dict]:
         """
-        Retorna o histórico completo de decisões.
+        Get the complete decision history.
 
-        Retorna:
-            Lista de dicionários com vazão, limite seguro e qualidade escolhida.
+        Returns:
+            List of decision dictionaries
         """
         return self.decision_history.copy()
 
     def get_last_decision(self) -> Optional[Dict]:
         """
-        Retorna a última decisão de seleção de qualidade.
+        Get the last quality selection decision.
 
-        Retorna:
-            Dicionário da última decisão ou None se ainda não houve decisão.
+        Returns:
+            Last decision dict or None if no decisions made yet
         """
         if self.decision_history:
             return self.decision_history[-1].copy()
@@ -119,13 +117,13 @@ class RateBasedABR:
 
     def get_decision_count(self, quality: Optional[str] = None) -> int:
         """
-        Conta decisões no total ou filtradas por uma qualidade específica.
+        Get count of decisions for a specific quality or total.
 
-        Argumentos:
-            quality: Nome da qualidade usada como filtro. Se for None, retorna o total.
+        Args:
+            quality: Quality name to filter by. If None, returns total count.
 
-        Retorna:
-            Número de decisões que correspondem ao filtro informado.
+        Returns:
+            Number of decisions matching criteria
         """
         if quality is None:
             return len(self.decision_history)
@@ -136,10 +134,10 @@ class RateBasedABR:
 
     def get_quality_switches(self) -> List[Dict]:
         """
-        Retorna todas as trocas de qualidade registradas no histórico.
+        Get list of all quality switches in history.
 
-        Retorna:
-            Lista com a qualidade anterior, a nova qualidade, timestamp e vazão.
+        Returns:
+            List of switches with previous and new quality
         """
         if len(self.decision_history) < 2:
             return []
@@ -162,12 +160,12 @@ class RateBasedABR:
         return switches
 
     def reset_history(self) -> None:
-        """Limpa o histórico e remove a qualidade atual."""
+        """Clear all decision history."""
         self.decision_history = []
         self.current_quality = None
 
     def __repr__(self) -> str:
-        """Retorna uma representação resumida do estado do ABR."""
+        """Return string representation of ABR instance."""
         return (
             f"RateBasedABR(current_quality={self.current_quality}, "
             f"decisions={len(self.decision_history)}, "
