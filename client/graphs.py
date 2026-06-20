@@ -14,6 +14,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import os
+import pandas as pd
+
 
 GRAPH_FILENAMES = {
     "throughput_timeline": "throughput_timeline.png",
@@ -483,6 +486,128 @@ def main() -> None:
     for path in generated.values():
         print(path)
 
+def generate_comparison_graphs(csv1, csv2, labels, output_dir="logs/graphs"):
+    """
+    Gera gráficos comparativos sobrepostos mapeando as colunas dinamicamente.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Carregar os dados
+    df1 = pd.read_csv(csv1)
+    df2 = pd.read_csv(csv2)
+    
+    # Mapeamento Dinâmico de Colunas para evitar KeyError
+    def get_col(df, options):
+        for opt in options:
+            if opt in df.columns:
+                return opt
+        raise KeyError(f"Nenhuma das colunas {options} foi encontrada no CSV. Colunas disponíveis: {list(df.columns)}")
+
+    # Mapeamento exato baseado no cabeçalho real detectado
+    col_seg = get_col(df1, ['segment', 'segmento'])
+    col_vazao = get_col(df1, ['vazao', 'vazao_kbps', 'throughput_kbps'])
+    col_quality = get_col(df1, ['quality', 'qualidade'])
+    col_buffer = get_col(df1, ['buffer level', 'buffer_level_s', 'buffer_level'])
+    col_jitter = get_col(df1, ['jitter_ewma', 'jitter_ewma_ms'])
+    col_stall = get_col(df1, ['rebuffer_event', 'stall_event'])
+    col_failover = get_col(df1, ['failover_total', 'failovers'])
+
+    # Identificar segmento de failover (onde o contador de failover total é maior que zero)
+    failover_seg_1 = df1[df1[col_failover] > 0][col_seg].min()
+    failover_seg_2 = df2[df2[col_failover] > 0][col_seg].min()
+    
+    # Define o primeiro que aconteceu para traçar a linha vertical de failover
+    if not pd.isna(failover_seg_1) and not pd.isna(failover_seg_2):
+        failover_seg = min(failover_seg_1, failover_seg_2)
+    else:
+        failover_seg = failover_seg_1 if not pd.isna(failover_seg_1) else failover_seg_2
+
+    colors = ['#1f77b4', '#ff7f0e'] 
+
+    # ─── GRÁFICO 1: VAZÃO MEDIDA ───────────────────────────────────────────
+    plt.figure(figsize=(10, 5))
+    plt.plot(df1[col_seg], df1[col_vazao], label=labels[0], color=colors[0], marker='o')
+    plt.plot(df2[col_seg], df2[col_vazao], label=labels[1], color=colors[1], marker='s')
+    if not pd.isna(failover_seg):
+        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover Server')
+    plt.title('Comparativo de Vazão Medida por Segmento')
+    plt.xlabel('Segmento')
+    plt.ylabel('Vazão (kbps)')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_throughput.png'), dpi=150)
+    plt.close()
+
+    # ─── GRÁFICO 2: QUALIDADE SELECIONADA (STEP CHART) ─────────────────────
+    plt.figure(figsize=(10, 5))
+    def get_numeric_quality(q_str):
+        try:
+            return int(''.join(filter(str.isdigit, str(q_str))))
+        except ValueError:
+            return 0
+
+    all_qualities = sorted(list(set(df1[col_quality].unique()).union(set(df2[col_quality].unique()))), key=get_numeric_quality)
+    q_map = {name: i for i, name in enumerate(all_qualities)}
+    
+    y1 = df1[col_quality].map(q_map)
+    y2 = df2[col_quality].map(q_map)
+
+    plt.step(df1[col_seg], y1, where='mid', label=labels[0], color=colors[0], linewidth=2)
+    plt.step(df2[col_seg], y2, where='mid', label=labels[1], color=colors[1], linewidth=2)
+    
+    if not pd.isna(failover_seg):
+        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
+        
+    plt.yticks(range(len(all_qualities)), all_qualities)
+    plt.title('Comparativo de Qualidade Selecionada ao Longo do Tempo')
+    plt.xlabel('Segmento')
+    plt.ylabel('Qualidade')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_quality_timeline.png'), dpi=150)
+    plt.close()
+
+    # ─── GRÁFICO 3: NÍVEL DO BUFFER E REBUFFERING ──────────────────────────
+    plt.figure(figsize=(10, 5))
+    plt.plot(df1[col_seg], df1[col_buffer], label=f'Buffer {labels[0]}', color=colors[0])
+    plt.plot(df2[col_seg], df2[col_buffer], label=f'Buffer {labels[1]}', color=colors[1])
+    
+    stalls1 = df1[df1[col_stall] == 1]
+    stalls2 = df2[df2[col_stall] == 1]
+    
+    if not stalls1.empty:
+        plt.scatter(stalls1[col_seg], stalls1[col_buffer], color='red', marker='X', s=100, zorder=5, label=f'Stall {labels[0]}')
+    if not stalls2.empty:
+        plt.scatter(stalls2[col_seg], stalls2[col_buffer], color='darkred', marker='X', s=100, zorder=5, label=f'Stall {labels[1]}')
+
+    if not pd.isna(failover_seg):
+        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
+        
+    plt.title('Comparativo do Nível do Buffer e Travamentos')
+    plt.xlabel('Segmento')
+    plt.ylabel('Buffer (s)')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_buffer_level.png'), dpi=150)
+    plt.close()
+
+    # ─── GRÁFICO 4: JITTER EWMA ────────────────────────────────────────────
+    plt.figure(figsize=(10, 5))
+    plt.plot(df1[col_seg], df1[col_jitter], label=labels[0], color=colors[0])
+    plt.plot(df2[col_seg], df2[col_jitter], label=labels[1], color=colors[1])
+    if not pd.isna(failover_seg):
+        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
+    plt.title('Comparativo de Jitter EWMA ao Longo dos Segmentos')
+    plt.xlabel('Segmento')
+    plt.ylabel('Jitter EWMA (ms)')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_jitter.png'), dpi=150)
+    plt.close()
 
 if __name__ == "__main__":
     main()
