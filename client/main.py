@@ -6,6 +6,7 @@ calcula jitter (Network e EWMA), gerencia buffer e executa failover automático.
 
 import os
 import math
+import sys
 import time
 import argparse
 import requests
@@ -137,15 +138,9 @@ def main():
     buffer_manager = BufferManager(max_buffer=15.0)
     failover = FailoverManager(servers)
     
-    # Configuração dos cabeçalhos esperados pelo script graphs.py original
-    COMPAT_HEADERS = [
-        "segment", "timestamp", "server_id", "quality", "bitrate",
-        "vazao", "download_time", "jitter_network", "jitter_ewma",
-        "buffer level", "buffer_can_play", "rebuffer_event",
-        "stall_duration", "failover_total"
-    ]
+    # Cabeçalho completo exigido pela especificação (seção 8.3)
     csv_path = os.path.join(args.output_dir, "metrics.csv")
-    recorder = MetricsRecorder(output_dir=args.output_dir, batch_size=1, headers=COMPAT_HEADERS)
+    recorder = MetricsRecorder(output_dir=args.output_dir, batch_size=1, headers=SPEC_HEADERS)
 
     # Estado inicial das variáveis de medição de rede
     jitter_ewma_ms = 0.0
@@ -171,16 +166,18 @@ def main():
 
         buffer_antes = buffer_manager.current_buffer
         chunk_timestamps = []
+        bytes_received = 0
         download_start = time.perf_counter()
         response_success = False
 
-        # Download por chunks com stream habilitado para medição interna de jitter
+        # Download por chunks com stream habilitado para medição de vazão real e jitter
         try:
             resp = requests.get(segment_url, stream=True, timeout=5.0)
             if resp.status_code == 200:
                 for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
                     if chunk:
                         chunk_timestamps.append(time.perf_counter())
+                        bytes_received += len(chunk)
                 response_success = True
             else:
                 print(f" Erro HTTP {resp.status_code}")
@@ -194,10 +191,11 @@ def main():
             if migrated:
                 new_server = failover.current_server
                 server_id = new_server.get("id", "B")
-                segment_url = f"{new_server['url'].rstrip()}/segment/{selected_quality}"
+                segment_url = f"{new_server['url'].rstrip('/')}/segment/{selected_quality}"
                 print(f"Migrado com sucesso para o Servidor {server_id}. Re-tentando download...")
-                
+
                 chunk_timestamps = []
+                bytes_received = 0
                 download_start = time.perf_counter()
                 try:
                     resp = requests.get(segment_url, stream=True, timeout=5.0)
@@ -205,6 +203,7 @@ def main():
                     for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
                         if chunk:
                             chunk_timestamps.append(time.perf_counter())
+                            bytes_received += len(chunk)
                     response_success = True
                 except Exception as e:
                     print(f"Falha catastrofica: Servidor de contingencia tambem falhou. {e}")
@@ -214,13 +213,12 @@ def main():
         download_end = time.perf_counter()
         download_time_s = download_end - download_start
 
-        # Tratamento de fallback temporal em caso de timeout/queda total
-        bytes_estimados = (bitrate_kbps * 1000 * segment_duration) / 8
+        # Fallback temporal em caso de timeout/queda total (sem bytes recebidos)
         if not response_success:
             download_time_s = segment_duration * 2
 
-        # Cálculo da vazão real obtida no segmento
-        vazao_kbps = (bytes_estimados * 8) / (download_time_s * 1000) if download_time_s > 0 else 0.1
+        # Vazão medida a partir dos bytes reais recebidos / tempo decorrido
+        vazao_kbps = (bytes_received * 8) / (download_time_s * 1000) if download_time_s > 0 else 0.1
 
         # Cálculo estatístico de variação de atraso (Jitter) entre chunks
         jitter_network_ms = 0.0
@@ -241,7 +239,8 @@ def main():
         buffer_manager.consume(download_time_s)
 
         # Detecção matemática de travamentos na reprodução (Stall e Rebuffering)
-        stall_duration_s = max(0.0, download_time_s - buffer_antes - segment_duration)
+        # Trava se o download demorou mais que o buffer disponível antes dele
+        stall_duration_s = max(0.0, download_time_s - buffer_antes)
         rebuffer_event = 1 if stall_duration_s > 0 or buffer_manager.is_rebuffering() else 0
         buffer_can_play = 1 if buffer_manager.can_play() else 0
 
@@ -249,20 +248,20 @@ def main():
 
         # Escrita incremental dos dados no registrador de métricas (CSV)
         recorder.record_segment({
-            "segment":           seg_index,
-            "timestamp":         datetime.now().isoformat(),
-            "server_id":         server_id,
-            "quality":           selected_quality,
-            "bitrate":           bitrate_kbps,
-            "vazao":             round(vazao_kbps, 2),
-            "download_time":     round(download_time_s, 4),
-            "jitter_network":    round(jitter_network_ms, 2),
-            "jitter_ewma":       round(jitter_ewma_ms, 2),
-            "buffer level":      round(buffer_manager.current_buffer, 2),
-            "buffer_can_play":   buffer_can_play,
-            "rebuffer_event":    rebuffer_event,
-            "stall_duration":    round(stall_duration_s, 4),
-            "failover_total":    failover.total_failovers,
+            "segment":            seg_index,
+            "timestamp":          datetime.now().isoformat(),
+            "server_id":          server_id,
+            "quality":            selected_quality,
+            "bitrate_kbps":       bitrate_kbps,
+            "vazao_kbps":         round(vazao_kbps, 2),
+            "download_time_s":    round(download_time_s, 4),
+            "jitter_network_ms":  round(jitter_network_ms, 2),
+            "jitter_ewma_ms":     round(jitter_ewma_ms, 2),
+            "buffer_level_s":     round(buffer_manager.current_buffer, 2),
+            "buffer_can_play":    buffer_can_play,
+            "rebuffer_event":     rebuffer_event,
+            "stall_duration_s":   round(stall_duration_s, 4),
+            "failover_total":     failover.total_failovers,
         })
 
     recorder.close()
@@ -279,7 +278,7 @@ def main():
         os.makedirs(abs_graphs_dir, exist_ok=True)
         
         subprocess.run(
-            ["python", graphs_script, abs_csv_path, "--output-dir", abs_graphs_dir],
+            [sys.executable, graphs_script, abs_csv_path, "--output-dir", abs_graphs_dir],
             check=True
         )
         print(f"Graficos gerados com sucesso na pasta: {abs_graphs_dir}")

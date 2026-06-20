@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from graphs import generate_comparison_graphs
 
 def find_dynamic_csv(directory):
@@ -28,7 +29,7 @@ def run():
 
     print("=== Iniciando Rodada 1: Rate-Based ===")
     subprocess.run([
-        "python", main_script,
+        sys.executable, main_script,
         "--policy", "rate-based",
         "--segments", str(segments),
         "--output-dir", log_dir_rate,
@@ -37,7 +38,7 @@ def run():
 
     print("\n=== Iniciando Rodada 2: Buffer-Based ===")
     subprocess.run([
-        "python", main_script,
+        sys.executable, main_script,
         "--policy", "buffer-based",
         "--segments", str(segments),
         "--output-dir", log_dir_buffer,

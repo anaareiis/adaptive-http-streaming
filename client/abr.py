@@ -174,17 +174,33 @@ class RateBasedABR:
 
 
 class BufferBasedABR:
-    """Buffer-based ABR algorithm for quality selection."""
+    """
+    Buffer-Based ABR algorithm (Política 2).
 
-    # Thresholds de segurança em segundos para o estado do buffer
-    LOW_BUFFER_THRESHOLD = 5.0    # Abaixo disso, força qualidade mínima para evitar stall
-    MEDIUM_BUFFER_THRESHOLD = 15.0 # Buffer seguro para qualidades intermediárias
-    HIGH_BUFFER_THRESHOLD = 30.0   # Buffer abundante, pode usar qualidade máxima
+    Selects quality based on buffer level rather than instantaneous throughput.
+    This reduces oscillation in unstable networks because the buffer acts as
+    a long-term indicator of network conditions.
+
+    Zones:
+        Reservoir [0, RESERVOIR): lowest quality — buffer critical, refill first
+        Cushion [RESERVOIR, RESERVOIR+CUSHION): proportional to buffer fraction
+        Full [RESERVOIR+CUSHION, ∞): highest quality — buffer comfortable
+
+    Hysteresis:
+        Downgrade: immediate (buffer drop is urgent)
+        Upgrade: only after UPGRADE_HOLD consecutive segments above the threshold
+    """
+
+    RESERVOIR = 6.0    # seconds below which → minimum quality
+    CUSHION = 40.0     # seconds of cushion zone above reservoir
+    UPGRADE_HOLD = 3   # consecutive segments required to confirm an upgrade
 
     def __init__(self):
         """Initialize the buffer-based ABR algorithm."""
-        self.decision_history = []
-        self.current_quality = None
+        self.decision_history: List[Dict] = []
+        self.current_quality: Optional[str] = None
+        self._pending_quality: Optional[str] = None
+        self._pending_count: int = 0
 
     def select_quality(
         self, current_buffer_s: float, qualities: List[Dict]
@@ -192,46 +208,76 @@ class BufferBasedABR:
         """
         Select quality based on the current buffer level in seconds.
 
-        Algorithm:
-        1. Sort available qualities by bitrate (lowest to highest).
-        2. If buffer < 5s: fallback to lowest quality (240p).
-        3. If buffer < 15s: select a conservative intermediate quality.
-        4. If buffer < 30s: select a high intermediate quality.
-        5. If buffer >= 30s: safely select the maximum available quality.
+        Args:
+            current_buffer_s: Current buffer level in seconds
+            qualities: List of dicts with 'name' and 'bitrate' fields
+
+        Returns:
+            Selected quality name
+
+        Raises:
+            TypeError: If current_buffer_s is not numeric
+            ValueError: If qualities list is empty
         """
         if not isinstance(current_buffer_s, (int, float)):
             raise TypeError(f"current_buffer_s must be numeric, got {type(current_buffer_s)}")
         if not qualities:
             raise ValueError("Qualities list cannot be empty")
 
-        # 1. Ordena as qualidades do menor bitrate para o maior
-        sorted_qualities = sorted(qualities, key=lambda x: x.get("bitrate", 0))
-        
-        # 2. Tomada de decisão por patamares de buffer (Seconds-based Thresholds)
-        if current_buffer_s < self.LOW_BUFFER_THRESHOLD:
-            selected = sorted_qualities[0]["name"]
-        elif current_buffer_s < self.MEDIUM_BUFFER_THRESHOLD:
-            idx = min(1, len(sorted_qualities) - 1)
-            selected = sorted_qualities[idx]["name"]
-        elif current_buffer_s < self.HIGH_BUFFER_THRESHOLD:
-            idx = min(2, len(sorted_qualities) - 1)
-            selected = sorted_qualities[idx]["name"]
-        else:
-            selected = sorted_qualities[-1]["name"]
+        sorted_qualities = sorted(qualities, key=lambda q: q.get("bitrate", 0))
+        n = len(sorted_qualities)
 
-        # 3. Registrar histórico (Mantendo a compatibilidade com a sua estrutura rica)
-        self.current_quality = selected
+        # Determine target quality from buffer zone
+        if current_buffer_s < self.RESERVOIR:
+            target = sorted_qualities[0]["name"]
+        elif current_buffer_s >= self.RESERVOIR + self.CUSHION:
+            target = sorted_qualities[-1]["name"]
+        else:
+            fraction = (current_buffer_s - self.RESERVOIR) / self.CUSHION
+            index = min(int(fraction * n), n - 1)
+            target = sorted_qualities[index]["name"]
+
+        # Apply hysteresis
+        if self.current_quality is None:
+            self.current_quality = target
+            self._pending_quality = None
+            self._pending_count = 0
+        else:
+            rank = {q["name"]: i for i, q in enumerate(sorted_qualities)}
+            current_rank = rank.get(self.current_quality, 0)
+            target_rank = rank.get(target, 0)
+
+            if target_rank < current_rank:
+                # Downgrade: immediate
+                self.current_quality = target
+                self._pending_quality = None
+                self._pending_count = 0
+            elif target_rank > current_rank:
+                # Upgrade: wait UPGRADE_HOLD confirmations
+                if self._pending_quality == target:
+                    self._pending_count += 1
+                    if self._pending_count >= self.UPGRADE_HOLD:
+                        self.current_quality = target
+                        self._pending_quality = None
+                        self._pending_count = 0
+                else:
+                    self._pending_quality = target
+                    self._pending_count = 1
+            else:
+                # Same quality: reset pending upgrade
+                self._pending_quality = None
+                self._pending_count = 0
+
         self.decision_history.append({
             "timestamp": datetime.now().isoformat(),
             "buffer_level_s": current_buffer_s,
-            "selected_quality": selected,
+            "selected_quality": self.current_quality,
         })
 
-        return selected
+        return self.current_quality
 
-    # --- Seus métodos auxiliares perfeitamente mantidos ---
     def get_decision_history(self) -> List[Dict]:
-        return self.decision_history
+        return self.decision_history.copy()
 
     def get_last_decision(self) -> Optional[Dict]:
         if self.decision_history:
@@ -262,6 +308,15 @@ class BufferBasedABR:
     def reset_history(self) -> None:
         self.decision_history = []
         self.current_quality = None
+        self._pending_quality = None
+        self._pending_count = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"BufferBasedABR(current_quality='{self.current_quality}', "
+            f"decisions={len(self.decision_history)}, "
+            f"reservoir={self.RESERVOIR}s, cushion={self.CUSHION}s)"
+        )
 
     def __repr__(self) -> str:
         return f"BufferBasedABR(current_quality='{self.current_quality}', decisions={len(self.decision_history)})"
