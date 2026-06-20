@@ -45,6 +45,7 @@ QUALITY_ALIASES = (
     "quality_name",
     "representation",
 )
+
 BUFFER_ALIASES = (
     "buffer_level",
     "buffer_seconds",
