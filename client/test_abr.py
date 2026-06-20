@@ -2,7 +2,7 @@
 
 import pytest
 from datetime import datetime
-from abr import RateBasedABR
+from abr import RateBasedABR, HybridABR
 
 
 SAMPLE_QUALITIES = [
@@ -243,6 +243,115 @@ class TestRateBasedABR:
 
         assert "current_quality=360p" in repr_str
         assert "decisions=1" in repr_str
+
+
+class TestHybridABR:
+    """Test cases for HybridABR (Política 3) algorithm."""
+
+    def test_initialization(self):
+        """Test ABR algorithm initialization."""
+        abr = HybridABR()
+
+        assert abr.current_quality is None
+        assert abr.decision_history == []
+        assert abr.ewma_throughput is None
+
+    def test_empty_qualities_raises(self):
+        """Test that an empty qualities list raises ValueError."""
+        abr = HybridABR()
+
+        with pytest.raises(ValueError):
+            abr.select_quality(1000, 10.0, 20.0, [])
+
+    def test_first_decision_uses_raw_throughput(self):
+        """Test that the EWMA starts at the first measured throughput."""
+        abr = HybridABR()
+
+        abr.select_quality(1500, jitter_ms=0.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+
+        assert abr.ewma_throughput == 1500
+
+    def test_ewma_smooths_throughput_over_time(self):
+        """Test that EWMA blends new samples with the running average instead
+        of jumping straight to the latest value."""
+        abr = HybridABR()
+
+        abr.select_quality(1000, jitter_ms=0.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+        abr.select_quality(3000, jitter_ms=0.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+
+        # EWMA_ALPHA = 0.3 -> 0.3*3000 + 0.7*1000 = 1600
+        assert abr.ewma_throughput == pytest.approx(1600.0)
+
+    def test_high_jitter_penalizes_quality(self):
+        """Test that high jitter forces a lower quality than low jitter at the
+        same throughput — the explicit jitter handling required by Tarefa 3."""
+        low_jitter_abr = HybridABR()
+        high_jitter_abr = HybridABR()
+
+        # Same throughput, healthy buffer in both cases — only jitter differs.
+        low_jitter_quality = low_jitter_abr.select_quality(
+            1500, jitter_ms=5.0, buffer_level_s=30.0, qualities=SAMPLE_QUALITIES
+        )
+        high_jitter_quality = high_jitter_abr.select_quality(
+            1500, jitter_ms=300.0, buffer_level_s=30.0, qualities=SAMPLE_QUALITIES
+        )
+
+        qualities_order = [q["name"] for q in sorted(SAMPLE_QUALITIES, key=lambda q: q["bitrate"])]
+        assert qualities_order.index(high_jitter_quality) < qualities_order.index(low_jitter_quality)
+
+    def test_buffer_safety_net_forces_minimum_quality(self):
+        """Test that a critically low buffer forces the minimum quality even
+        when throughput is high and jitter is low."""
+        abr = HybridABR()
+
+        quality = abr.select_quality(
+            5000, jitter_ms=0.0, buffer_level_s=2.0, qualities=SAMPLE_QUALITIES
+        )
+
+        assert quality == "240p"
+
+    def test_decision_history_tracking(self):
+        """Test that decisions are recorded with the expected fields."""
+        abr = HybridABR()
+
+        abr.select_quality(1500, jitter_ms=10.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+        history = abr.get_decision_history()
+
+        assert len(history) == 1
+        decision = history[0]
+        assert "ewma_throughput_kbps" in decision
+        assert "penalty" in decision
+        assert "effective_throughput_kbps" in decision
+        assert decision["selected_quality"] == abr.current_quality
+
+    def test_quality_switches(self):
+        """Test detection of quality switches across decisions."""
+        abr = HybridABR()
+
+        abr.select_quality(200, jitter_ms=0.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+        abr.select_quality(5000, jitter_ms=0.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+
+        switches = abr.get_quality_switches()
+        assert len(switches) == 1
+        assert switches[0]["from_quality"] != switches[0]["to_quality"]
+
+    def test_reset_history(self):
+        """Test that reset clears history, current quality and the EWMA state."""
+        abr = HybridABR()
+        abr.select_quality(1500, jitter_ms=10.0, buffer_level_s=20.0, qualities=SAMPLE_QUALITIES)
+
+        abr.reset_history()
+
+        assert abr.decision_history == []
+        assert abr.current_quality is None
+        assert abr.ewma_throughput is None
+
+    def test_repr(self):
+        """Test string representation of ABR."""
+        abr = HybridABR()
+
+        repr_str = repr(abr)
+        assert "HybridABR" in repr_str
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ import argparse
 import requests
 from datetime import datetime
 
-from abr import RateBasedABR, BufferBasedABR
+from abr import RateBasedABR, BufferBasedABR, HybridABR
 from buffer_manager import BufferManager
 from failover import FailoverManager
 from metrics import MetricsRecorder, SPEC_HEADERS
@@ -31,9 +31,9 @@ def main():
     # Interface de Linha de Comando (CLI)
     parser = argparse.ArgumentParser(description="Cliente de Streaming Adaptativo — Issue 14")
     parser.add_argument(
-        "--policy", 
-        default="rate-based", 
-        choices=["rate-based", "buffer-based"],
+        "--policy",
+        default="rate-based",
+        choices=["rate-based", "buffer-based", "hybrid"],
         help="Politica de ABR a ser utilizada (padrao: rate-based)"
     )
     parser.add_argument(
@@ -132,8 +132,10 @@ def main():
     # Inicialização das classes de controle do player
     if args.policy == "rate-based":
         abr = RateBasedABR()
-    else:
+    elif args.policy == "buffer-based":
         abr = BufferBasedABR()
+    else:
+        abr = HybridABR()
 
     buffer_manager = BufferManager(max_buffer=15.0)
     failover = FailoverManager(servers)
@@ -149,10 +151,15 @@ def main():
     # Loop de execução principal orientado a segmentos de mídia
     for seg_index in range(1, args.segments + 1):
         # Tomada de decisão da qualidade através do algoritmo ABR selecionado
+        # (vazao_kbps e jitter_ewma_ms vêm da medição do segmento anterior)
         if args.policy == "rate-based":
             selected_quality = abr.select_quality(vazao_kbps, qualities)
-        else:
+        elif args.policy == "buffer-based":
             selected_quality = abr.select_quality(buffer_manager.current_buffer, qualities)
+        else:
+            selected_quality = abr.select_quality(
+                vazao_kbps, jitter_ewma_ms, buffer_manager.current_buffer, qualities
+            )
 
         bitrate_kbps = next((q["bitrate"] for q in qualities if q["name"] == selected_quality), 200)
 

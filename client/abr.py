@@ -318,5 +318,151 @@ class BufferBasedABR:
             f"reservoir={self.RESERVOIR}s, cushion={self.CUSHION}s)"
         )
 
+
+class HybridABR:
+    """
+    Hybrid ABR algorithm (Política 3).
+
+    Combines three signals instead of relying on a single one:
+
+    1. EWMA of throughput — recent samples weigh more than older ones, the
+       same idea TCP uses to estimate RTT (Jacobson/Karels): it smooths out
+       noisy instantaneous measurements without losing the ability to react
+       to a real trend, unlike RateBasedABR which reacts to every sample.
+
+    2. Jitter penalty — derates the EWMA throughput proportionally to the
+       measured jitter (jitter_ewma_ms), the same logic behind TCP's RTO
+       calculation (RTO = RTT + 4*RTTVAR): the less predictable the delivery
+       timing, the larger the safety margin subtracted from the estimate.
+       This is the explicit treatment of high-jitter scenarios required by
+       Tarefa 3 — a noisy connection gets a more conservative quality even
+       if its average throughput looks fine.
+
+    3. Buffer safety net — if the buffer drops below RESERVOIR (same
+       threshold used by BufferBasedABR), the minimum quality is forced
+       regardless of the throughput estimate, so an optimistic estimate
+       can never cause a rebuffer.
+
+    select_quality(throughput_kbps, jitter_ms, buffer_level_s, qualities)
+    """
+
+    EWMA_ALPHA = 0.3         # weight given to the most recent throughput sample
+    JITTER_PENALTY_K = 2.0   # multiplier applied to the jitter ratio
+    MAX_PENALTY = 0.9        # caps the penalty so throughput is never zeroed out
+    SAFETY_FACTOR = 0.85     # same safety margin used by RateBasedABR
+    RESERVOIR = 6.0          # same critical-buffer threshold used by BufferBasedABR
+
+    def __init__(self):
+        """Initialize the hybrid ABR algorithm."""
+        self.ewma_throughput: Optional[float] = None
+        self.decision_history: List[Dict] = []
+        self.current_quality: Optional[str] = None
+
+    def select_quality(
+        self,
+        throughput_kbps: float,
+        jitter_ms: float,
+        buffer_level_s: float,
+        qualities: List[Dict],
+    ) -> str:
+        """
+        Select quality combining EWMA throughput, a jitter penalty and a
+        buffer safety net.
+
+        Args:
+            throughput_kbps: Throughput measured for the last segment
+            jitter_ms: Jitter measured for the last segment (e.g. jitter_ewma_ms)
+            buffer_level_s: Current buffer level in seconds
+            qualities: List of dicts with 'name' and 'bitrate' fields
+
+        Returns:
+            Selected quality name
+
+        Raises:
+            ValueError: If qualities list is empty
+        """
+        if not qualities:
+            raise ValueError("Qualities list is empty")
+
+        # 1. EWMA of throughput
+        if self.ewma_throughput is None:
+            self.ewma_throughput = throughput_kbps
+        else:
+            self.ewma_throughput = (
+                self.EWMA_ALPHA * throughput_kbps
+                + (1 - self.EWMA_ALPHA) * self.ewma_throughput
+            )
+
+        # 2. Jitter penalty — derates the throughput estimate when delivery
+        # timing is unstable.
+        jitter_ratio = max(0.0, jitter_ms) / 1000.0
+        penalty = min(self.MAX_PENALTY, self.JITTER_PENALTY_K * jitter_ratio)
+        effective_throughput = self.ewma_throughput * (1 - penalty)
+
+        # 3. Quality selection over the derated estimate, with the usual
+        # safety margin.
+        safety_limit = effective_throughput * self.SAFETY_FACTOR
+        sorted_qualities = sorted(qualities, key=lambda q: q["bitrate"])
+        selected = sorted_qualities[0]["name"]
+        for quality in sorted_qualities:
+            if quality["bitrate"] <= safety_limit:
+                selected = quality["name"]
+
+        # 4. Buffer safety net — never risk a rebuffer on an optimistic estimate.
+        if buffer_level_s < self.RESERVOIR:
+            selected = sorted_qualities[0]["name"]
+
+        self.current_quality = selected
+        self.decision_history.append({
+            "timestamp": datetime.now().isoformat(),
+            "throughput_kbps": throughput_kbps,
+            "ewma_throughput_kbps": round(self.ewma_throughput, 2),
+            "jitter_ms": jitter_ms,
+            "penalty": round(penalty, 4),
+            "effective_throughput_kbps": round(effective_throughput, 2),
+            "buffer_level_s": buffer_level_s,
+            "selected_quality": selected,
+        })
+
+        return selected
+
+    def get_decision_history(self) -> List[Dict]:
+        return self.decision_history.copy()
+
+    def get_last_decision(self) -> Optional[Dict]:
+        if self.decision_history:
+            return self.decision_history[-1].copy()
+        return None
+
+    def get_decision_count(self, quality: Optional[str] = None) -> int:
+        if quality is None:
+            return len(self.decision_history)
+        return sum(1 for d in self.decision_history if d["selected_quality"] == quality)
+
+    def get_quality_switches(self) -> List[Dict]:
+        if len(self.decision_history) < 2:
+            return []
+        switches = []
+        for i in range(1, len(self.decision_history)):
+            prev = self.decision_history[i - 1]["selected_quality"]
+            curr = self.decision_history[i]["selected_quality"]
+            if prev != curr:
+                switches.append({
+                    "from_quality": prev,
+                    "to_quality": curr,
+                    "timestamp": self.decision_history[i]["timestamp"],
+                    "buffer_level_s": self.decision_history[i]["buffer_level_s"],
+                })
+        return switches
+
+    def reset_history(self) -> None:
+        self.decision_history = []
+        self.current_quality = None
+        self.ewma_throughput = None
+
     def __repr__(self) -> str:
-        return f"BufferBasedABR(current_quality='{self.current_quality}', decisions={len(self.decision_history)})"
+        return (
+            f"HybridABR(current_quality='{self.current_quality}', "
+            f"decisions={len(self.decision_history)}, "
+            f"ewma_throughput={self.ewma_throughput})"
+        )
