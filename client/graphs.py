@@ -73,7 +73,16 @@ REBUFFER_COUNT_ALIASES = (
     "rebuffers",
     "rebuffer_number",
 )
-
+JITTER_INSTANT_ALIASES = (
+    'jitter_network_ms', 
+    'jitter_instant', 
+    'jitter_raw',
+)
+JITTER_EWMA_ALIASES = (
+    'jitter_ewma_ms', 
+    'jitter', 
+    'jitter_filtered',
+)
 
 @dataclass
 class StreamingMetrics:
@@ -510,128 +519,202 @@ def main() -> None:
     for path in generated.values():
         print(path)
 
-def generate_comparison_graphs(csv1, csv2, labels, output_dir="logs/graphs"):
+def generate_comparison_graphs(csv_paths: List[str], labels: List[str], output_dir: str):
     """
-    Gera gráficos comparativos sobrepostos mapeando as colunas dinamicamente.
+    Gera gráficos comparativos sobrepostos aceitando N políticas/sessões (Issue 17).
     """
+    if len(csv_paths) != len(labels):
+        raise ValueError("A quantidade de arquivos CSV deve ser igual à de labels.")
+
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import os
+
+    # Carregar os DataFrames e mapear colunas usando os aliases existentes
+    dataframes = []
+    for path in csv_paths:
+        df = pd.read_csv(path)
+        
+        # Identificar colunas cruciais de forma flexível e normalizar seus nomes
+        df.rename(columns={
+            col: 'segment' for col in df.columns if col in ('segment', 'segment_id', 'chunk_id')
+        }, inplace=True)
+        df.rename(columns={
+            col: 'quality' for col in df.columns if col in QUALITY_ALIASES
+        }, inplace=True)
+        df.rename(columns={
+            col: 'buffer' for col in df.columns if col in BUFFER_ALIASES
+        }, inplace=True)
+        df.rename(columns={
+            col: 'vazao' for col in df.columns if col in THROUGHPUT_ALIASES
+        }, inplace=True)
+        df.rename(columns={
+            col: 'jitter_instant' for col in df.columns if col in JITTER_INSTANT_ALIASES
+        }, inplace=True)
+        df.rename(columns={
+            col: 'jitter_ewma' for col in df.columns if col in JITTER_EWMA_ALIASES
+        }, inplace=True)
+        df.rename(columns={
+            col: 'stall' for col in df.columns if col in REBUFFER_ALIASES or col in ('rebuffer_event', 'rebuffering_occurred')
+        }, inplace=True)
+        
+        # Validação de segurança pós-rename para garantir que a coluna essencial de buffer foi mapeada
+        if 'buffer' not in df.columns:
+            raise KeyError(f"Não foi encontrada nenhuma coluna de buffer reconhecida no arquivo: {path}. "
+                           f"Colunas disponíveis: {list(df.columns)}")
+            
+        dataframes.append(df)
+
     os.makedirs(output_dir, exist_ok=True)
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'] # Azul, Laranja, Verde...
     
-    # Carregar os dados
-    df1 = pd.read_csv(csv1)
-    df2 = pd.read_csv(csv2)
-    
-    # Mapeamento Dinâmico de Colunas para evitar KeyError
-    def get_col(df, options):
-        for opt in options:
-            if opt in df.columns:
-                return opt
-        raise KeyError(f"Nenhuma das colunas {options} foi encontrada no CSV. Colunas disponíveis: {list(df.columns)}")
-
-    # Mapeamento exato baseado no cabeçalho real detectado
-    col_seg = get_col(df1, ['segment', 'segmento'])
-    col_vazao = get_col(df1, ['vazao', 'vazao_kbps', 'throughput_kbps'])
-    col_quality = get_col(df1, ['quality', 'qualidade'])
-    col_buffer = get_col(df1, ['buffer level', 'buffer_level_s', 'buffer_level'])
-    col_jitter = get_col(df1, ['jitter_ewma', 'jitter_ewma_ms'])
-    col_stall = get_col(df1, ['rebuffer_event', 'stall_event'])
-    col_failover = get_col(df1, ['failover_total', 'failovers'])
-
-    # Identificar segmento de failover (onde o contador de failover total é maior que zero)
-    failover_seg_1 = df1[df1[col_failover] > 0][col_seg].min()
-    failover_seg_2 = df2[df2[col_failover] > 0][col_seg].min()
-    
-    # Define o primeiro que aconteceu para traçar a linha vertical de failover
-    if not pd.isna(failover_seg_1) and not pd.isna(failover_seg_2):
-        failover_seg = min(failover_seg_1, failover_seg_2)
-    else:
-        failover_seg = failover_seg_1 if not pd.isna(failover_seg_1) else failover_seg_2
-
-    colors = ['#1f77b4', '#ff7f0e'] 
+    # Encontrar se houve algum evento de failover global para marcar com linha vertical
+    failover_seg = None
+    for df in dataframes:
+        if 'failover_total' in df.columns:
+            changed = df[df['failover_total'] > 0]
+            if not changed.empty:
+                failover_seg = changed['segment'].iloc[0]
+                break
 
     # ─── GRÁFICO 1: VAZÃO MEDIDA ───────────────────────────────────────────
     plt.figure(figsize=(10, 5))
-    plt.plot(df1[col_seg], df1[col_vazao], label=labels[0], color=colors[0], marker='o')
-    plt.plot(df2[col_seg], df2[col_vazao], label=labels[1], color=colors[1], marker='s')
-    if not pd.isna(failover_seg):
-        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover Server')
-    plt.title('Comparativo de Vazão Medida por Segmento')
+    for i, df in enumerate(dataframes):
+        if 'vazao' in df.columns:
+            plt.plot(df['segment'], df['vazao'], label=labels[i], color=colors[i], alpha=0.8)
+    if failover_seg:
+        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover detectado')
+    plt.title('Comparativo de Vazão da Rede (Mesmo Cenário)')
     plt.xlabel('Segmento')
-    plt.ylabel('Vazão (kbps)')
+    plt.ylabel('Vazão Medida (kbps)')
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'comparison_throughput.png'), dpi=150)
     plt.close()
 
-    # ─── GRÁFICO 2: QUALIDADE SELECIONADA (STEP CHART) ─────────────────────
+    # ─── GRÁFICO 2: EVOLUÇÃO DA QUALIDADE (RESOLUÇÃO DO MATPLOTLIB) ───────────
     plt.figure(figsize=(10, 5))
-    def get_numeric_quality(q_str):
-        try:
-            return int(''.join(filter(str.isdigit, str(q_str))))
-        except ValueError:
-            return 0
-
-    all_qualities = sorted(list(set(df1[col_quality].unique()).union(set(df2[col_quality].unique()))), key=get_numeric_quality)
-    q_map = {name: i for i, name in enumerate(all_qualities)}
     
-    y1 = df1[col_quality].map(q_map)
-    y2 = df2[col_quality].map(q_map)
-
-    plt.step(df1[col_seg], y1, where='mid', label=labels[0], color=colors[0], linewidth=2)
-    plt.step(df2[col_seg], y2, where='mid', label=labels[1], color=colors[1], linewidth=2)
+    # Dicionário para mapear as qualidades para posições numéricas fixas
+    quality_map = {'240p': 0, '360p': 1, '480p': 2}
     
-    if not pd.isna(failover_seg):
+    colors_three = ['#1f77b4', '#ff7f0e', '#2ca02c'] 
+
+    for i, df in enumerate(dataframes):
+        if df is None or df.empty:
+            continue
+            
+        current_label = labels[i] if i < len(labels) else f"Política {i+1}"
+        current_color = colors_three[i] if i < len(colors_three) else colors[i]
+        col_seg = 'segment' if 'segment' in df.columns else df.columns[0]
+        
+        if 'quality' in df.columns:
+            # Converte as strings de qualidade para números (0, 1, 2) usando o mapa
+            # Evita o erro de ordenação automática do Matplotlib
+            y_values = df['quality'].map(quality_map)
+            
+            plt.plot(
+                df[col_seg], 
+                y_values, 
+                label=current_label, 
+                color=current_color, 
+                marker='o', 
+                alpha=0.7,
+                linewidth=2
+            )
+            
+    if failover_seg:
         plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
         
-    plt.yticks(range(len(all_qualities)), all_qualities)
-    plt.title('Comparativo de Qualidade Selecionada ao Longo do Tempo')
+    plt.title('Comparativo de Tomada de Decisão de Qualidade (ABR)')
     plt.xlabel('Segmento')
-    plt.ylabel('Qualidade')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
+    plt.ylabel('Resolução / Qualidade')
+    
+    # 🛠️ CORREÇÃO DO EIXO Y: Fixa os índices e coloca as labels textuais por cima
+    plt.yticks(ticks=[0, 1, 2], labels=['240p', '360p', '480p'])
+    
+    # Define os limites do eixo para não cortar os marcadores das pontas
+    plt.ylim(-0.3, 2.3)
+    
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.legend(loc='upper right')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'comparison_quality_timeline.png'), dpi=150)
     plt.close()
 
-    # ─── GRÁFICO 3: NÍVEL DO BUFFER E REBUFFERING ──────────────────────────
+    # ─── GRÁFICO 3: NÍVEL DO BUFFER E TRAVAMENTOS (STALLS) ─────────────────
     plt.figure(figsize=(10, 5))
-    plt.plot(df1[col_seg], df1[col_buffer], label=f'Buffer {labels[0]}', color=colors[0])
-    plt.plot(df2[col_seg], df2[col_buffer], label=f'Buffer {labels[1]}', color=colors[1])
-    
-    stalls1 = df1[df1[col_stall] == 1]
-    stalls2 = df2[df2[col_stall] == 1]
-    
-    if not stalls1.empty:
-        plt.scatter(stalls1[col_seg], stalls1[col_buffer], color='red', marker='X', s=100, zorder=5, label=f'Stall {labels[0]}')
-    if not stalls2.empty:
-        plt.scatter(stalls2[col_seg], stalls2[col_buffer], color='darkred', marker='X', s=100, zorder=5, label=f'Stall {labels[1]}')
-
-    if not pd.isna(failover_seg):
-        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
+    for i, df in enumerate(dataframes):
+        # Como o rename unificou tudo para 'buffer', usamos diretamente aqui:
+        plt.plot(df['segment'], df['buffer'], label=f'Buffer {labels[i]}', color=colors[i])
         
-    plt.title('Comparativo do Nível do Buffer e Travamentos')
+        # Marcar Stalls específicos de cada política (considera 1 ou True como travamento)
+        if 'stall' in df.columns:
+            stalls = df[(df['stall'] == 1) | (df['stall'] == True)]
+            if not stalls.empty:
+                plt.scatter(stalls['segment'], stalls['buffer'], color='red', marker='X', s=120, zorder=5, label=f'Stall ({labels[i]})')
+    if failover_seg:
+        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
+    plt.title('Comparativo da Dinâmica do Buffer e Travamentos')
     plt.xlabel('Segmento')
-    plt.ylabel('Buffer (s)')
+    plt.ylabel('Segundos em Buffer (s)')
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'comparison_buffer_level.png'), dpi=150)
     plt.close()
 
-    # ─── GRÁFICO 4: JITTER EWMA ────────────────────────────────────────────
+   # ─── GRÁFICO 4: JITTER INSTANTÂNEO VS EWMA (3 POLÍTICAS) ─────────────────
     plt.figure(figsize=(10, 5))
-    plt.plot(df1[col_seg], df1[col_jitter], label=labels[0], color=colors[0])
-    plt.plot(df2[col_seg], df2[col_jitter], label=labels[1], color=colors[1])
-    if not pd.isna(failover_seg):
-        plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
-    plt.title('Comparativo de Jitter EWMA ao Longo dos Segmentos')
+    
+    # Cores master para as 3 políticas
+    colors_three = ['#1f77b4', '#ff7f0e', '#2ca02c'] # Azul (Rate), Laranja (Buffer), Verde (Hybrid)
+
+    for i, df in enumerate(dataframes):
+        if df is None or df.empty:
+            continue
+            
+        current_label = labels[i] if i < len(labels) else f"Política {i+1}"
+        current_color = colors_three[i] if i < len(colors_three) else colors[i]
+        col_seg = 'segment' if 'segment' in df.columns else df.columns[0]
+        
+        # 1. Plot do Jitter Instantâneo (Pontilhado, fino e mais claro/transparente)
+        if 'jitter_instant' in df.columns:
+            plt.plot(
+                df[col_seg], 
+                df['jitter_instant'], 
+                label=f'{current_label} (Instantâneo)', 
+                color=current_color, 
+                alpha=0.55,          # Linha bem mais clara
+                linestyle=':',       # Estilo pontilhado
+                linewidth=1.5
+            )
+            
+        # 2. Plot do Jitter EWMA (Sólido, nítido e destacado)
+        if 'jitter_ewma' in df.columns:
+            plt.plot(
+                df[col_seg], 
+                df['jitter_ewma'], 
+                label=f'{current_label} (EWMA)', 
+                color=current_color, 
+                linewidth=2.2,       # Linha mais grossa para destaque
+                alpha=0.9,
+                zorder=3             # Garante que o EWMA fique visualmente acima do pontilhado
+            )
+
+    plt.title('Comparativo de Instabilidade do Canal (Jitter Bruto vs EWMA)')
     plt.xlabel('Segmento')
-    plt.ylabel('Jitter EWMA (ms)')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
+    plt.ylabel('Jitter (ms)')
+    plt.grid(True, alpha=0.3, linestyle='--')
+    
+    # Organiza a legenda em duas colunas para ficar limpo
+    plt.legend(loc='upper right', ncol=2, fontsize='small')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'comparison_jitter.png'), dpi=150)
     plt.close()
+
+    print(f"✨ Todos os 4 gráficos comparativos triplos gerados com sucesso em: {output_dir}")
 
 if __name__ == "__main__":
     main()
