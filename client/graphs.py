@@ -25,6 +25,7 @@ GRAPH_FILENAMES = {
     "quality_distribution": "quality_distribution.png",
     "throughput_histogram": "throughput_histogram.png",
     "jitter_ewma": "jitter_ewma.png",
+    "player_dynamics": "player_dynamics.png",
 }
 
 TIME_ALIASES = (
@@ -184,6 +185,7 @@ def generate_graphs(
         "quality_distribution": output_path / GRAPH_FILENAMES["quality_distribution"],
         "throughput_histogram": output_path / GRAPH_FILENAMES["throughput_histogram"],
         "jitter_ewma": output_path / GRAPH_FILENAMES["jitter_ewma"],
+        "player_dynamics": output_path / GRAPH_FILENAMES["player_dynamics"],
     }
 
     _plot_throughput_timeline(metrics, paths["throughput_timeline"])
@@ -192,6 +194,7 @@ def generate_graphs(
     _plot_quality_distribution(metrics, paths["quality_distribution"])
     _plot_throughput_histogram(metrics, paths["throughput_histogram"])
     _plot_jitter_ewma(metrics, paths["jitter_ewma"])
+    _plot_player_dynamics(metrics, paths["player_dynamics"])
 
     return paths
 
@@ -308,6 +311,69 @@ def _plot_throughput_histogram(metrics: StreamingMetrics, output_path: Path) -> 
     ax.set_xlabel("Throughput (kbps)")
     ax.set_ylabel("Frequency")
     ax.set_title("Throughput Histogram")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+_QUALITY_NOMINAL_KBPS: Dict[str, int] = {
+    "240p": 200, "360p": 400, "480p": 600, "720p": 1000, "1080p": 1200,
+}
+
+
+def _plot_player_dynamics(metrics: StreamingMetrics, output_path: Path) -> None:
+    """Buffer + throughput + quality (bitrate nominal) num único painel — gráfico de apresentação."""
+    quality_kbps = [
+        _QUALITY_NOMINAL_KBPS.get(q, 400) for q in metrics.qualities
+    ]
+
+    fig, ax_buf = plt.subplots(figsize=(12, 6))
+    ax_net = ax_buf.twinx()
+
+    # Buffer — eixo esquerdo (área preenchida + linha)
+    ax_buf.fill_between(metrics.time_s, metrics.buffer_level,
+                        alpha=0.20, color="#9467bd")
+    ax_buf.plot(metrics.time_s, metrics.buffer_level,
+                color="#9467bd", linewidth=2.5, label="Nível do Buffer (s)")
+
+    # Throughput — eixo direito (pontilhado)
+    ax_net.plot(metrics.time_s, metrics.throughput_kbps,
+                color="#1f77b4", linewidth=1.5, alpha=0.75,
+                linestyle=":", label="Vazão Medida (kbps)")
+
+    # Qualidade como bitrate nominal — eixo direito (degrau sólido)
+    ax_net.step(metrics.time_s, quality_kbps, where="post",
+                color="#2ca02c", linewidth=2.5, label="Qualidade Selecionada (kbps nominal)")
+
+    # Marcadores de rebuffering e failover
+    _highlight_rebuffers(ax_buf, metrics)
+    _highlight_failover(ax_buf, metrics)
+
+    # Ticks do eixo direito nas resoluções conhecidas
+    present_kbps = sorted(set(quality_kbps))
+    ax_net.set_yticks(present_kbps)
+    ax_net.set_yticklabels([
+        f"{next((q for q, k in _QUALITY_NOMINAL_KBPS.items() if k == b), str(b))} ({b} kbps)"
+        for b in present_kbps
+    ])
+
+    ax_buf.set_xlabel("Número de Segmento", fontsize=11)
+    ax_buf.set_ylabel("Nível do Buffer (s)", color="#9467bd", fontsize=11)
+    ax_net.set_ylabel("Throughput / Qualidade (kbps)", color="#1f77b4", fontsize=11)
+    ax_buf.tick_params(axis="y", labelcolor="#9467bd")
+    ax_net.tick_params(axis="y", labelcolor="#1f77b4")
+    ax_buf.set_title(
+        "Dinâmica do Player: Adaptação de Mídia e Instabilidade da Rede",
+        fontsize=13, fontweight="bold",
+    )
+    ax_buf.grid(True, alpha=0.25)
+
+    # Legenda combinada
+    lines_buf, labels_buf = ax_buf.get_legend_handles_labels()
+    lines_net, labels_net = ax_net.get_legend_handles_labels()
+    ax_buf.legend(lines_buf + lines_net, labels_buf + labels_net,
+                  loc="upper left", fontsize=9)
+
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
