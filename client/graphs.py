@@ -357,7 +357,7 @@ def _plot_player_dynamics(metrics: StreamingMetrics, output_path: Path) -> None:
         for b in present_kbps
     ])
 
-    ax_buf.set_xlabel("Número de Segmento", fontsize=11)
+    ax_buf.set_xlabel("Tempo (s)", fontsize=11)
     ax_buf.set_ylabel("Nível do Buffer (s)", color="#9467bd", fontsize=11)
     ax_net.set_ylabel("Throughput / Qualidade (kbps)", color="#1f77b4", fontsize=11)
     ax_buf.tick_params(axis="y", labelcolor="#9467bd")

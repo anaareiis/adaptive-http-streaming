@@ -19,7 +19,7 @@ def run():
     log_dir_rate = os.path.join(project_root, "logs", "rate_based")
     log_dir_buffer = os.path.join(project_root, "logs", "buffer_based")
     log_dir_hybrid = os.path.join(project_root, "logs", "hybrid")
-    comparison_graphs_dir = os.path.join(project_root, "logs", "graphs")
+    comparison_graphs_dir = os.path.join(project_root, "graphs", "comparison")
     
     main_script = os.path.join(base_dir, "main.py")
     segments = 20  

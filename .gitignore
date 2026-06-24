@@ -22,7 +22,6 @@ wheels/
 *.egg
 
 # Logs
-logs/
 *.log
 
 # Pytest cache
@@ -40,7 +39,6 @@ Thumbs.db
 
 # Project specific
 reports/
-graphs/
 
 # Issue files (local development)
 ISSUE_*.md
