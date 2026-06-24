@@ -4,7 +4,6 @@ import sys
 from graphs import generate_comparison_graphs
 
 def find_dynamic_csv(directory):
-    """Procura por qualquer arquivo CSV que comece com 'metrics_' no diretório."""
     if not os.path.exists(directory):
         return None
     for file in os.listdir(directory):
@@ -13,20 +12,20 @@ def find_dynamic_csv(directory):
     return None
 
 def run():
-    # Caminhos base absolutos ajustados para bater com a sua estrutura de pastas
     base_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(base_dir)
 
+    # Criação dos subdiretórios para isolar os logs de cada execução
     log_dir_rate = os.path.join(project_root, "logs", "rate_based")
     log_dir_buffer = os.path.join(project_root, "logs", "buffer_based")
-    
-    # Pasta de gráficos comparativos: logs/graphs/
+    log_dir_hybrid = os.path.join(project_root, "logs", "hybrid")
     comparison_graphs_dir = os.path.join(project_root, "logs", "graphs")
     
     main_script = os.path.join(base_dir, "main.py")
     segments = 20  
     manifest_url = "http://137.131.178.229:8080/manifest"
 
+    # Rodada 1
     print("=== Iniciando Rodada 1: Rate-Based ===")
     subprocess.run([
         sys.executable, main_script,
@@ -36,6 +35,7 @@ def run():
         "--manifest", manifest_url
     ], check=True)
 
+    # Rodada 2
     print("\n=== Iniciando Rodada 2: Buffer-Based ===")
     subprocess.run([
         sys.executable, main_script,
@@ -45,31 +45,36 @@ def run():
         "--manifest", manifest_url
     ], check=True)
 
-    # Localização dinâmica dos CSVs com timestamp (ex: metrics_202606...)
+    # Rodada 3 (Implementando a chamada da Política 3 criada na Issue 16)
+    print("\n=== Iniciando Rodada 3: Hybrid (Política 3) ===")
+    subprocess.run([
+        sys.executable, main_script,
+        "--policy", "hybrid",
+        "--segments", str(segments),
+        "--output-dir", log_dir_hybrid,
+        "--manifest", manifest_url
+    ], check=True)
+
+    # Coleta dinâmica dos arquivos CSV gerados
     csv_rate = find_dynamic_csv(log_dir_rate)
     csv_buffer = find_dynamic_csv(log_dir_buffer)
+    csv_hybrid = find_dynamic_csv(log_dir_hybrid)
     
-    # Validação de segurança
-    if not csv_rate:
-        raise FileNotFoundError(f"Nenhum CSV de métricas encontrado em: {log_dir_rate}")
-    if not csv_buffer:
-        raise FileNotFoundError(f"Nenhum CSV de métricas encontrado em: {log_dir_buffer}")
+    if not all([csv_rate, csv_buffer, csv_hybrid]):
+        raise FileNotFoundError("Erro ao localizar um ou mais arquivos CSV gerados na simulação.")
 
-    print(f"\n[ok] Arquivos dinâmicos localizados:")
-    print(f" -> Rate-Based CSV: {os.path.basename(csv_rate)}")
-    print(f" -> Buffer-Based CSV: {os.path.basename(csv_buffer)}")
+    print(f"\n[ok] Todos os arquivos foram localizados com sucesso.")
 
-    # Garante que a pasta logs/graphs exista antes de gerar os comparativos
-    os.makedirs(comparison_graphs_dir, exist_ok=True)
-
-    print("\n=== Gerando Gráficos Comparativos Sobrepostos (Issue 15) ===")
+    # Execução do gerador estendido passando as 3 listas emparelhadas
+    print("\n=== Gerando Gráficos Comparativos Triplos Sobrepostos ===")
+    csv_list = [csv_rate, csv_buffer, csv_hybrid]
+    label_list = ["Rate-Based", "Buffer-Based", "Hybrid (P3)"]
+    
     generate_comparison_graphs(
-        csv1=csv_rate,
-        csv2=csv_buffer,
-        labels=["Rate-Based", "Buffer-Based"],
+        csv_paths=csv_list,
+        labels=label_list,
         output_dir=comparison_graphs_dir
     )
-    print(f"✨ Sucesso! Os gráficos comparativos foram salvos em: {comparison_graphs_dir}")
 
 if __name__ == "__main__":
     run()
