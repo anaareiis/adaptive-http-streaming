@@ -507,7 +507,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.compare:
-        generate_comparison_graphs(args.compare[0], args.compare[1], args.labels, args.output_dir)
+        generate_comparison_graphs(args.compare, args.labels, args.output_dir)
         for name in ("comparison_throughput", "comparison_quality_timeline", "comparison_buffer_level", "comparison_jitter"):
             print(os.path.join(args.output_dir, f"{name}.png"))
         return
