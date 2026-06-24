@@ -1,0 +1,56 @@
+gabriel_pc@MacGab:~/Testes/TR2/adaptive-http-streaming-main/client$   python3 main.py --segments 30 --policy hybrid --force-failover-at 15
+Iniciando cliente adaptativo...
+   Manifesto: http://137.131.178.229:8080/manifest
+   Politica:  hybrid
+   Segmentos: 30
+
+[01/30] Requisitando 240p de Servidor A... OK | Vazao: 374.4 kbps | Buffer: 3.47s | Stall: 0.53s
+[02/30] Requisitando 240p de Servidor A... OK | Vazao: 279.0 kbps | Buffer: 6.75s | Stall: 0.00s
+[03/30] Requisitando 360p de Servidor A... OK | Vazao: 782.9 kbps | Buffer: 10.24s | Stall: 0.00s
+[04/30] Requisitando 360p de Servidor A... OK | Vazao: 434.1 kbps | Buffer: 13.32s | Stall: 0.00s
+[05/30] Requisitando 360p de Servidor A... OK | Vazao: 782.2 kbps | Buffer: 14.49s | Stall: 0.00s
+[06/30] Requisitando 360p de Servidor A... OK | Vazao: 765.0 kbps | Buffer: 14.48s | Stall: 0.00s
+[07/30] Requisitando 360p de Servidor A... OK | Vazao: 1059.3 kbps | Buffer: 14.62s | Stall: 0.00s
+[08/30] Requisitando 360p de Servidor A... OK | Vazao: 1001.6 kbps | Buffer: 14.60s | Stall: 0.00s
+[09/30] Requisitando 360p de Servidor A... OK | Vazao: 1004.2 kbps | Buffer: 14.60s | Stall: 0.00s
+[10/30] Requisitando 360p de Servidor A... OK | Vazao: 974.5 kbps | Buffer: 14.59s | Stall: 0.00s
+[11/30] Requisitando 360p de Servidor A... OK | Vazao: 1017.3 kbps | Buffer: 14.61s | Stall: 0.00s
+[12/30] Requisitando 360p de Servidor A... OK | Vazao: 1009.1 kbps | Buffer: 14.60s | Stall: 0.00s
+[13/30] Requisitando 360p de Servidor A... OK | Vazao: 985.4 kbps | Buffer: 14.59s | Stall: 0.00s
+[14/30] Requisitando 360p de Servidor A... OK | Vazao: 1013.2 kbps | Buffer: 14.61s | Stall: 0.00s
+
+*** FORCANDO FALHA ARTIFICIAL no segmento 15 ***
+[15/30] Requisitando 480p de Servidor A... Erro de Conexao: HTTPConnectionPool(host='127.0.0.1', port=9999): Max retries exceeded with url: /segment/force_fail (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x761cf179f8c0>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+Aviso: Falha detectada no Servidor A. Iniciando failover...
+Migrado com sucesso para o Servidor srv-B. Re-tentando download...
+ OK | Vazao: 726.6 kbps | Buffer: 14.17s | Stall: 0.00s
+[16/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 688.2 kbps | Buffer: 14.42s | Stall: 0.00s
+[17/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 683.7 kbps | Buffer: 14.41s | Stall: 0.00s
+[18/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 667.3 kbps | Buffer: 14.40s | Stall: 0.00s
+[19/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 642.7 kbps | Buffer: 14.38s | Stall: 0.00s
+[20/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 696.7 kbps | Buffer: 14.43s | Stall: 0.00s
+[21/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 666.8 kbps | Buffer: 14.40s | Stall: 0.00s
+[22/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 662.7 kbps | Buffer: 14.40s | Stall: 0.00s
+[23/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 666.7 kbps | Buffer: 14.40s | Stall: 0.00s
+[24/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 652.8 kbps | Buffer: 14.39s | Stall: 0.00s
+[25/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 690.2 kbps | Buffer: 14.42s | Stall: 0.00s
+[26/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 661.2 kbps | Buffer: 14.40s | Stall: 0.00s
+[27/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 669.2 kbps | Buffer: 14.40s | Stall: 0.00s
+[28/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 665.6 kbps | Buffer: 14.40s | Stall: 0.00s
+[29/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 646.9 kbps | Buffer: 14.38s | Stall: 0.00s
+[30/30] Requisitando 360p de Servidor srv-B... OK | Vazao: 687.7 kbps | Buffer: 14.42s | Stall: 0.00s
+
+Simulacao concluida. CSV salvo com sucesso em: logs/metrics.csv
+Gerando graficos...
+/home/gabriel_pc/.local/lib/python3.12/site-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.
+  warnings.warn("Unable to import Axes3D. This may be due to multiple versions of "
+/home/gabriel_pc/Testes/TR2/adaptive-http-streaming-main/client/graphs/throughput_timeline.png
+/home/gabriel_pc/Testes/TR2/adaptive-http-streaming-main/client/graphs/quality_timeline.png
+/home/gabriel_pc/Testes/TR2/adaptive-http-streaming-main/client/graphs/buffer_level.png
+/home/gabriel_pc/Testes/TR2/adaptive-http-streaming-main/client/graphs/quality_distribution.png
+/home/gabriel_pc/Testes/TR2/adaptive-http-streaming-main/client/graphs/throughput_histogram.png
+Graficos gerados com sucesso na pasta: /home/gabriel_pc/Testes/TR2/adaptive-http-streaming-main/client/graphs
+gabriel_pc@MacGab:~/Testes/TR2/adaptive-http-streaming-main/client$ 
+
+
