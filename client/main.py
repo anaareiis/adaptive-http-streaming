@@ -141,8 +141,8 @@ def main():
     failover = FailoverManager(servers)
     
     # Cabeçalho completo exigido pela especificação (seção 8.3)
-    csv_path = os.path.join(args.output_dir, "metrics.csv")
     recorder = MetricsRecorder(output_dir=args.output_dir, batch_size=1, headers=SPEC_HEADERS)
+    csv_path = recorder.filepath
 
     # Estado inicial das variáveis de medição de rede
     jitter_ewma_ms = 0.0
@@ -278,10 +278,11 @@ def main():
     print("Gerando graficos...")
     try:
         import subprocess
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         graphs_script = os.path.join(os.path.dirname(__file__), "graphs.py")
         abs_csv_path = os.path.abspath(recorder.filepath)
-        abs_graphs_dir = os.path.abspath("graphs")
-        
+        abs_graphs_dir = os.path.join(project_root, "graphs", args.policy)
+
         os.makedirs(abs_graphs_dir, exist_ok=True)
         
         subprocess.run(

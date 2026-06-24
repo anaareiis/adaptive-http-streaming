@@ -56,6 +56,7 @@ BUFFER_ALIASES = (
     "buffer",
     "current_buffer",
     "buffer_level_secs",
+    "buffer_level_s",
 )
 REBUFFER_ALIASES = (
     "rebuffer",
@@ -474,13 +475,35 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate graphs from adaptive streaming CSV metrics."
     )
-    parser.add_argument("csv_path", help="Path to the metrics CSV file")
+    parser.add_argument("csv_path", nargs="?", help="Path to the metrics CSV file")
     parser.add_argument(
         "--output-dir",
         default="graphs",
         help="Directory where graph PNG files will be saved",
     )
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("CSV1", "CSV2"),
+        help="Gera gráficos comparativos sobrepostos entre duas sessões (ex: Política 1 vs Política 2)",
+    )
+    parser.add_argument(
+        "--labels",
+        nargs=2,
+        metavar=("LABEL1", "LABEL2"),
+        default=["Política 1", "Política 2"],
+        help="Rótulos das duas sessões usados no modo --compare",
+    )
     args = parser.parse_args()
+
+    if args.compare:
+        generate_comparison_graphs(args.compare[0], args.compare[1], args.labels, args.output_dir)
+        for name in ("comparison_throughput", "comparison_quality_timeline", "comparison_buffer_level", "comparison_jitter"):
+            print(os.path.join(args.output_dir, f"{name}.png"))
+        return
+
+    if not args.csv_path:
+        parser.error("csv_path é obrigatório quando --compare não é usado")
 
     generated = generate_graphs(args.csv_path, args.output_dir)
     for path in generated.values():
