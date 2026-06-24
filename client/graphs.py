@@ -51,6 +51,7 @@ QUALITY_ALIASES = (
 
 BUFFER_ALIASES = (
     "buffer_level",
+    "buffer_level_s",
     "buffer_seconds",
     "buffer_s",
     "buffer",

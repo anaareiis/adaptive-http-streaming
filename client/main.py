@@ -48,9 +48,15 @@ def main():
         help="Diretorio para salvar o arquivo CSV de metricas (padrao: logs)"
     )
     parser.add_argument(
-        "--manifest", 
-        default="http://137.131.178.229:8080/manifest", 
+        "--manifest",
+        default="http://137.131.178.229:8080/manifest",
         help="URL do manifesto do servidor (padrao: oficial UnB)"
+    )
+    parser.add_argument(
+        "--force-failover-at",
+        type=int,
+        default=None,
+        help="Forca falha artificial no segmento especificado para testar failover (ex: 15)"
     )
     args = parser.parse_args()
 
@@ -166,8 +172,14 @@ def main():
         # Resolução do endpoint do servidor atual baseado em prioridade e sanidade
         active_server = failover.current_server
         server_url = active_server["url"].rstrip("/")
-        server_id = active_server.get("id", "A") 
-        segment_url = f"{server_url}/segment/{selected_quality}"
+        server_id = active_server.get("id", "A")
+
+        # FORCAR FALHA ARTIFICIAL para teste de failover (Issue 22)
+        if args.force_failover_at and seg_index == args.force_failover_at:
+            segment_url = "http://127.0.0.1:9999/segment/force_fail"  # URL impossivel
+            print(f"\n*** FORCANDO FALHA ARTIFICIAL no segmento {seg_index} ***", flush=True)
+        else:
+            segment_url = f"{server_url}/segment/{selected_quality}"
 
         print(f"[{seg_index:02d}/{args.segments}] Requisitando {selected_quality} de Servidor {server_id}...", end="", flush=True)
 
