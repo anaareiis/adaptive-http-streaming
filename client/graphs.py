@@ -24,6 +24,7 @@ GRAPH_FILENAMES = {
     "buffer_level": "buffer_level.png",
     "quality_distribution": "quality_distribution.png",
     "throughput_histogram": "throughput_histogram.png",
+    "jitter_ewma": "jitter_ewma.png",
 }
 
 TIME_ALIASES = (
@@ -57,7 +58,11 @@ BUFFER_ALIASES = (
     "buffer",
     "current_buffer",
     "buffer_level_secs",
-    "buffer_level_s",
+)
+FAILOVER_ALIASES = (
+    "failover_total",
+    "failover_count",
+    "failovers",
 )
 REBUFFER_ALIASES = (
     "rebuffer",
@@ -93,6 +98,9 @@ class StreamingMetrics:
     qualities: List[str]
     buffer_level: List[float]
     rebuffer_events: List[bool]
+    jitter_network_ms: Optional[List[float]] = None
+    jitter_ewma_ms: Optional[List[float]] = None
+    failover_times: Optional[List[float]] = None
 
 
 def load_csv_data(csv_path: Union[str, Path]) -> StreamingMetrics:
@@ -115,12 +123,35 @@ def load_csv_data(csv_path: Union[str, Path]) -> StreamingMetrics:
     quality_col = _find_column(columns, QUALITY_ALIASES, "quality")
     buffer_col = _find_column(columns, BUFFER_ALIASES, "buffer level")
     time_col = _find_optional_column(columns, TIME_ALIASES)
+    jitter_instant_col = _find_optional_column(columns, JITTER_INSTANT_ALIASES)
+    jitter_ewma_col = _find_optional_column(columns, JITTER_EWMA_ALIASES)
+    failover_col = _find_optional_column(columns, FAILOVER_ALIASES)
 
     time_s = _parse_time_values(rows, columns, time_col)
     throughput = _parse_float_column(rows, columns, throughput_col, "throughput")
     qualities = [_read_value(row, columns, quality_col).strip() for row in rows]
     buffer_level = _parse_float_column(rows, columns, buffer_col, "buffer level")
     rebuffer_events = _parse_rebuffer_events(rows, columns, buffer_level)
+
+    jitter_network_ms = (
+        _parse_float_column(rows, columns, jitter_instant_col, "jitter_network")
+        if jitter_instant_col else None
+    )
+    jitter_ewma_ms = (
+        _parse_float_column(rows, columns, jitter_ewma_col, "jitter_ewma")
+        if jitter_ewma_col else None
+    )
+
+    failover_times = None
+    if failover_col:
+        failover_totals = _parse_float_column(rows, columns, failover_col, "failover")
+        prev = failover_totals[0]
+        times = [time_s[0]] if prev > 0 else []
+        for i, val in enumerate(failover_totals[1:], start=1):
+            if val > prev:
+                times.append(time_s[i])
+            prev = val
+        failover_times = times or None
 
     if not all(qualities):
         raise ValueError("Quality column contains empty values")
@@ -131,6 +162,9 @@ def load_csv_data(csv_path: Union[str, Path]) -> StreamingMetrics:
         qualities=qualities,
         buffer_level=buffer_level,
         rebuffer_events=rebuffer_events,
+        jitter_network_ms=jitter_network_ms,
+        jitter_ewma_ms=jitter_ewma_ms,
+        failover_times=failover_times,
     )
 
 
@@ -149,6 +183,7 @@ def generate_graphs(
         "buffer_level": output_path / GRAPH_FILENAMES["buffer_level"],
         "quality_distribution": output_path / GRAPH_FILENAMES["quality_distribution"],
         "throughput_histogram": output_path / GRAPH_FILENAMES["throughput_histogram"],
+        "jitter_ewma": output_path / GRAPH_FILENAMES["jitter_ewma"],
     }
 
     _plot_throughput_timeline(metrics, paths["throughput_timeline"])
@@ -156,6 +191,7 @@ def generate_graphs(
     _plot_buffer_level(metrics, paths["buffer_level"])
     _plot_quality_distribution(metrics, paths["quality_distribution"])
     _plot_throughput_histogram(metrics, paths["throughput_histogram"])
+    _plot_jitter_ewma(metrics, paths["jitter_ewma"])
 
     return paths
 
@@ -188,6 +224,7 @@ def _plot_throughput_timeline(metrics: StreamingMetrics, output_path: Path) -> N
     _format_time_axis(ax_throughput)
     _format_quality_axis(ax_quality, quality_map)
     _highlight_rebuffers(ax_throughput, metrics)
+    _highlight_failover(ax_throughput, metrics)
     ax_throughput.set_ylabel("Throughput (kbps)")
     ax_quality.set_ylabel("Quality")
     ax_throughput.set_title("Throughput vs Selected Quality")
@@ -215,6 +252,7 @@ def _plot_quality_timeline(metrics: StreamingMetrics, output_path: Path) -> None
     _format_time_axis(ax)
     _format_quality_axis(ax, quality_map)
     _highlight_rebuffers(ax, metrics)
+    _highlight_failover(ax, metrics)
     ax.set_ylabel("Quality")
     ax.set_title("Quality Timeline")
     ax.legend(loc="best")
@@ -237,6 +275,7 @@ def _plot_buffer_level(metrics: StreamingMetrics, output_path: Path) -> None:
 
     _format_time_axis(ax)
     _highlight_rebuffers(ax, metrics)
+    _highlight_failover(ax, metrics)
     ax.set_ylabel("Buffer (s)")
     ax.set_title("Buffer Level")
     ax.legend(loc="best")
@@ -269,6 +308,31 @@ def _plot_throughput_histogram(metrics: StreamingMetrics, output_path: Path) -> 
     ax.set_xlabel("Throughput (kbps)")
     ax.set_ylabel("Frequency")
     ax.set_title("Throughput Histogram")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_jitter_ewma(metrics: StreamingMetrics, output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(10, 5))
+    if metrics.jitter_network_ms:
+        ax.plot(
+            metrics.time_s, metrics.jitter_network_ms,
+            color="#fdae6b", linewidth=1.5, linestyle="--", alpha=0.7,
+            label="Jitter instantâneo (rede)",
+        )
+    if metrics.jitter_ewma_ms:
+        ax.plot(
+            metrics.time_s, metrics.jitter_ewma_ms,
+            color="#d62728", linewidth=2,
+            label="Jitter EWMA",
+        )
+    _format_time_axis(ax)
+    _highlight_rebuffers(ax, metrics)
+    _highlight_failover(ax, metrics)
+    ax.set_ylabel("Jitter (ms)")
+    ax.set_title("Variação de Atraso (Jitter) — Instantâneo e EWMA")
+    ax.legend(loc="best")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -429,6 +493,16 @@ def _highlight_rebuffers(ax, metrics: StreamingMetrics) -> None:
         added_label = True
 
 
+def _highlight_failover(ax, metrics: StreamingMetrics) -> None:
+    if not metrics.failover_times:
+        return
+    added_label = False
+    for t in metrics.failover_times:
+        label = "Failover" if not added_label else None
+        ax.axvline(t, color="#ff7f0e", linestyle="--", linewidth=2, alpha=0.8, label=label)
+        added_label = True
+
+
 def _combine_legends(*axes) -> None:
     handles = []
     labels = []
@@ -493,21 +567,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--compare",
-        nargs=2,
-        metavar=("CSV1", "CSV2"),
-        help="Gera gráficos comparativos sobrepostos entre duas sessões (ex: Política 1 vs Política 2)",
+        nargs="+",
+        metavar="CSV",
+        help="Gera gráficos comparativos sobrepostos entre N sessões (ex: csv1.csv csv2.csv csv3.csv)",
     )
     parser.add_argument(
         "--labels",
-        nargs=2,
-        metavar=("LABEL1", "LABEL2"),
-        default=["Política 1", "Política 2"],
-        help="Rótulos das duas sessões usados no modo --compare",
+        nargs="+",
+        metavar="LABEL",
+        help="Rótulos das sessões usados no modo --compare (padrão: Política 1, 2, ...)",
     )
     args = parser.parse_args()
 
     if args.compare:
-        generate_comparison_graphs(args.compare, args.labels, args.output_dir)
+        labels = args.labels or [f"Política {i+1}" for i in range(len(args.compare))]
+        generate_comparison_graphs(args.compare, labels, args.output_dir)
         for name in ("comparison_throughput", "comparison_quality_timeline", "comparison_buffer_level", "comparison_jitter"):
             print(os.path.join(args.output_dir, f"{name}.png"))
         return
@@ -595,48 +669,43 @@ def generate_comparison_graphs(csv_paths: List[str], labels: List[str], output_d
 
     # ─── GRÁFICO 2: EVOLUÇÃO DA QUALIDADE (RESOLUÇÃO DO MATPLOTLIB) ───────────
     plt.figure(figsize=(10, 5))
-    
-    # Dicionário para mapear as qualidades para posições numéricas fixas
-    quality_map = {'240p': 0, '360p': 1, '480p': 2}
-    
-    colors_three = ['#1f77b4', '#ff7f0e', '#2ca02c'] 
+
+    # Constrói mapa de qualidade dinamicamente a partir de todos os dados
+    all_qualities = sorted(
+        {q for df in dataframes if 'quality' in df.columns for q in df['quality'].dropna().unique()},
+        key=_quality_sort_key,
+    )
+    quality_map = {q: i for i, q in enumerate(all_qualities)}
 
     for i, df in enumerate(dataframes):
         if df is None or df.empty:
             continue
-            
+
         current_label = labels[i] if i < len(labels) else f"Política {i+1}"
-        current_color = colors_three[i] if i < len(colors_three) else colors[i]
+        current_color = colors[i % len(colors)]
         col_seg = 'segment' if 'segment' in df.columns else df.columns[0]
-        
+
         if 'quality' in df.columns:
-            # Converte as strings de qualidade para números (0, 1, 2) usando o mapa
-            # Evita o erro de ordenação automática do Matplotlib
             y_values = df['quality'].map(quality_map)
-            
             plt.plot(
-                df[col_seg], 
-                y_values, 
-                label=current_label, 
-                color=current_color, 
-                marker='o', 
+                df[col_seg],
+                y_values,
+                label=current_label,
+                color=current_color,
+                marker='o',
                 alpha=0.7,
-                linewidth=2
+                linewidth=2,
             )
-            
+
     if failover_seg:
         plt.axvline(x=failover_seg, color='red', linestyle='--', label='Failover')
-        
+
     plt.title('Comparativo de Tomada de Decisão de Qualidade (ABR)')
     plt.xlabel('Segmento')
     plt.ylabel('Resolução / Qualidade')
-    
-    # 🛠️ CORREÇÃO DO EIXO Y: Fixa os índices e coloca as labels textuais por cima
-    plt.yticks(ticks=[0, 1, 2], labels=['240p', '360p', '480p'])
-    
-    # Define os limites do eixo para não cortar os marcadores das pontas
-    plt.ylim(-0.3, 2.3)
-    
+    plt.yticks(ticks=list(quality_map.values()), labels=list(quality_map.keys()))
+    n = len(all_qualities)
+    plt.ylim(-0.3, n - 0.7)
     plt.grid(True, alpha=0.3, linestyle='--')
     plt.legend(loc='upper right')
     plt.tight_layout()
